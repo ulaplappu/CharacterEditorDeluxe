@@ -12,6 +12,7 @@ namespace CharacterEditorDeluxe
     [BepInPlugin("com.codex.mgt2.charactereditordeluxe", "MGT2 Character Editor Deluxe", "1.0.5")]
     public sealed class Plugin : BaseUnityPlugin
     {
+        private static Plugin activePlugin;
         private static readonly string[] StatFields = {
             "s_motivation", "s_gamedesign", "s_programmieren", "s_grafik", "s_sound",
             "s_pr", "s_gametests", "s_technik", "s_forschen"
@@ -35,10 +36,12 @@ namespace CharacterEditorDeluxe
         private readonly HashSet<characterScript> trackedCharacters = new HashSet<characterScript>();
         private readonly Dictionary<characterScript, float> pendingNewCharacters = new Dictionary<characterScript, float>();
         private readonly List<characterScript> employeeCache = new List<characterScript>();
+        private readonly List<characterScript> readyNewCharacters = new List<characterScript>();
         private bool visible;
         private int activeTab;
         private Vector2 scroll;
         private int selectedIndex;
+        private float nextStatsRefresh;
         private characterScript selected;
         private readonly float[] stagedStats = new float[9];
         private readonly bool[] statDirty = new bool[9];
@@ -76,6 +79,7 @@ namespace CharacterEditorDeluxe
             public string Description;
             public PerkKind Kind;
             public GUIContent Content;
+            public GUIContent TooltipContent;
         }
 
         private const float MinimumWindowWidth = 560f;
@@ -87,6 +91,7 @@ namespace CharacterEditorDeluxe
 
         private void Awake()
         {
+            activePlugin = this;
             autoMaxNewEmployees = Config.Bind("General", "AutoMaxNewEmployees", false, "Automatically max newly added employees after initialization.");
             configuredCap = Config.Bind("Stats", "StatCap", 100, "Safe maximum stat value (0 to 100). MGT2's native scale is 0 to 100.");
             var globalLock = Config.Bind("Locks", "LockEditedStats", true, "Keep edited skills at their assigned values during work, training and save/load.");
@@ -110,11 +115,25 @@ namespace CharacterEditorDeluxe
             Logger.LogInfo("Character Editor Deluxe loaded. Toggle with F8.");
         }
 
+        internal static mainScript CurrentGame
+        {
+            get { return activePlugin == null ? null : activePlugin.game; }
+        }
+
+        internal static void SetGame(mainScript source)
+        {
+            if (activePlugin == null || source == null) return;
+            activePlugin.game = source;
+            if (activePlugin.designPriorities != null) activePlugin.designPriorities.SetPlayer(source);
+            if (activePlugin.updateContent != null) activePlugin.updateContent.SetPlayer(source);
+        }
+
         private void Update()
         {
             if (Input.GetKeyDown(KeyCode.F8)) SetVisible(!visible);
 
-            UpdateGameplayInputGuard();
+            if (visible) UpdateGameplayInputGuard();
+            else if (inputGuardApplied) ReleaseGameplayInputGuard();
 
             if (visible && IsMouseOverWindow())
                 Input.ResetInputAxes();
@@ -122,14 +141,24 @@ namespace CharacterEditorDeluxe
             if (geometryDirty && !Input.GetMouseButton(0))
                 SaveWindowGeometry();
 
-            if (Time.unscaledTime >= nextLookup)
+            bool autoMax = autoMaxNewEmployees.Value;
+            bool refreshEditor = visible;
+            bool refreshDesignMenus = visible || designPriorities.NeedsMenuUpdate;
+            if ((refreshEditor || autoMax || refreshDesignMenus) && Time.unscaledTime >= nextLookup)
             {
                 nextLookup = Time.unscaledTime + 1f;
-                if (game == null) game = UnityEngine.Object.FindObjectOfType<mainScript>();
-                RefreshEmployeeCache();
-                TrackNewEmployees();
-                RefreshPerkCatalog();
-                designPriorities.UpdateMenu();
+                if (refreshEditor || autoMax)
+                {
+                    if (game == null && refreshEditor)
+                    {
+                        game = UnityEngine.Object.FindObjectOfType<mainScript>();
+                        if (game != null) SetGame(game);
+                    }
+                    RefreshEmployeeCache();
+                    TrackNewEmployees();
+                    if (refreshEditor) RefreshPerkCatalog();
+                }
+                if (refreshDesignMenus) designPriorities.UpdateMenu();
             }
         }
 
@@ -519,6 +548,7 @@ namespace CharacterEditorDeluxe
             if (overrides != null) overrides.Uninstall();
             if (designPriorities != null) designPriorities.Uninstall();
             if (updateContent != null) updateContent.Uninstall();
+            if (activePlugin == this) activePlugin = null;
         }
 
         private void OnApplicationQuit()
@@ -590,7 +620,8 @@ namespace CharacterEditorDeluxe
 
         private void RefreshCurrentStats()
         {
-            if (selected == null) return;
+            if (selected == null || Time.unscaledTime < nextStatsRefresh) return;
+            nextStatsRefresh = Time.unscaledTime + 1f;
             for (int i = 0; i < stagedStats.Length; i++)
             {
                 if (statDirty[i]) continue;
@@ -675,6 +706,7 @@ namespace CharacterEditorDeluxe
                 if (!string.Equals(info.Name, "Unknown / unresolved", StringComparison.Ordinal))
                     info.Kind = ClassifyPerk(info.Name, info.Description);
                 info.Content = new GUIContent(info.Name, "CEDPERK:" + i.ToString(CultureInfo.InvariantCulture));
+                info.TooltipContent = new GUIContent(info.Name + "\n" + info.Description);
                 catalog[i] = info;
             }
             perkCatalog = catalog;
@@ -721,7 +753,16 @@ namespace CharacterEditorDeluxe
         private PerkInfo GetPerkInfo(int index)
         {
             if (index >= 0 && index < perkCatalog.Length && perkCatalog[index] != null) return perkCatalog[index];
-            return new PerkInfo { Index = index, Name = "Unknown / unresolved", Description = "The official game name or effect could not be resolved.", Kind = PerkKind.Unknown, Content = new GUIContent("Unknown / unresolved", "CEDPERK:" + index.ToString(CultureInfo.InvariantCulture)) };
+            const string unknown = "Unknown / unresolved";
+            return new PerkInfo
+            {
+                Index = index,
+                Name = unknown,
+                Description = "The official game name or effect could not be resolved.",
+                Kind = PerkKind.Unknown,
+                Content = new GUIContent(unknown, "CEDPERK:" + index.ToString(CultureInfo.InvariantCulture)),
+                TooltipContent = new GUIContent(unknown + "\nThe official game name or effect could not be resolved.")
+            };
         }
 
         private void DrawPerkTooltip()
@@ -739,14 +780,13 @@ namespace CharacterEditorDeluxe
                 perkTooltipStyle.alignment = TextAnchor.UpperLeft;
                 perkTooltipStyle.padding = new RectOffset(10, 10, 8, 8);
             }
-            string content = perk.Name + "\n" + perk.Description;
             float width = Mathf.Min(390f, Mathf.Max(160f, Screen.width - 16f));
-            float height = perkTooltipStyle.CalcHeight(new GUIContent(content), width);
+            float height = perkTooltipStyle.CalcHeight(perk.TooltipContent, width);
             Rect rect = new Rect(
                 Mathf.Clamp(mouse.x + 18f, 0f, Mathf.Max(0f, Screen.width - width)),
                 Mathf.Clamp(mouse.y + 18f, 0f, Mathf.Max(0f, Screen.height - height)),
                 width, height);
-            GUI.Box(rect, content, perkTooltipStyle);
+            GUI.Box(rect, perk.TooltipContent, perkTooltipStyle);
         }
 
         private string GetCharacterLabel(characterScript character, int index)
@@ -780,15 +820,17 @@ namespace CharacterEditorDeluxe
                 pendingNewCharacters.Clear();
                 return;
             }
-            var ready = new List<characterScript>();
+            readyNewCharacters.Clear();
             foreach (var pending in pendingNewCharacters)
-                if (pending.Key == null || Time.unscaledTime >= pending.Value) ready.Add(pending.Key);
-            foreach (var character in ready)
+                if (pending.Key == null || Time.unscaledTime >= pending.Value) readyNewCharacters.Add(pending.Key);
+            if (readyNewCharacters.Count > 0) RefreshPerkCatalog();
+            foreach (var character in readyNewCharacters)
             {
                 pendingNewCharacters.Remove(character);
                 if (character == null) continue;
                 MaxCharacter(character);
             }
+            readyNewCharacters.Clear();
         }
 
         private void MaxCharacter(characterScript character)

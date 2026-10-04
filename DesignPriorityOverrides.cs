@@ -54,6 +54,18 @@ namespace CharacterEditorDeluxe
                 postfix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(AfterMenuClosed)));
             harmony.Patch(AccessTools.Method(typeof(Menu_DevGame), "InitNewGame"),
                 postfix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(AfterNewGameMenuOpened)));
+            var gameMenuInit = AccessTools.Method(typeof(Menu_DevGame), "Init");
+            if (gameMenuInit != null)
+                harmony.Patch(gameMenuInit, postfix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(AfterGameMenuInitialized)));
+            var gameMenuEnable = AccessTools.Method(typeof(Menu_DevGame), "OnEnable");
+            if (gameMenuEnable != null)
+                harmony.Patch(gameMenuEnable, postfix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(AfterGameMenuInitialized)));
+            var playerInit = AccessTools.Method(typeof(mainScript), "InitNewGame");
+            if (playerInit != null)
+                harmony.Patch(playerInit, postfix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(AfterPlayerInitialized)));
+            var gameLoad = AccessTools.Method(typeof(savegameScript), "Load");
+            if (gameLoad != null)
+                harmony.Patch(gameLoad, postfix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(AfterGameLoaded)));
             harmony.Patch(AccessTools.Method(typeof(Menu_Dev_ChangeDesignproritaet), "Init"),
                 prefix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(BeforeChangeMenuOpened)));
             harmony.Patch(AccessTools.Method(typeof(Menu_Dev_ChangeDesignproritaet), "BUTTON_OK"),
@@ -85,6 +97,13 @@ namespace CharacterEditorDeluxe
         {
             if (harmony != null) harmony.UnpatchSelf();
             if (active == this) active = null;
+        }
+
+        internal bool NeedsMenuUpdate { get { return enabled.Value || lastEnabled; } }
+
+        internal void SetPlayer(mainScript source)
+        {
+            if (source != null) player = source;
         }
 
         internal void ResetToVanilla()
@@ -123,11 +142,6 @@ namespace CharacterEditorDeluxe
 
         internal void UpdateMenu()
         {
-            if (player == null) player = UnityEngine.Object.FindObjectOfType<mainScript>();
-            if (menu == null) menu = UnityEngine.Object.FindObjectOfType<Menu_DevGame>();
-            if (changeMenu == null) changeMenu = UnityEngine.Object.FindObjectOfType<Menu_Dev_ChangeDesignproritaet>();
-            if (addonMenu == null) addonMenu = UnityEngine.Object.FindObjectOfType<Menu_Dev_AddonDo>();
-            if (mmoAddonMenu == null) mmoAddonMenu = UnityEngine.Object.FindObjectOfType<Menu_Dev_MMOAddon>();
             bool nowEnabled = enabled.Value;
             int nowMaximum = NormalizeMaximum(maximum.Value);
             if (maximum.Value != nowMaximum) maximum.Value = nowMaximum;
@@ -260,7 +274,9 @@ namespace CharacterEditorDeluxe
 
         private static void BeforeCopyDesignSettings(Menu_DevGame __instance)
         {
-            if (active == null || !active.enabled.Value) return;
+            if (active == null || __instance == null) return;
+            active.menu = __instance;
+            if (!active.enabled.Value) return;
             var sliders = GetSliders(__instance);
             if (sliders == null) return;
             SetSliderMaximum(sliders, active.maximum.Value / 5);
@@ -268,7 +284,9 @@ namespace CharacterEditorDeluxe
 
         private static void BeforeChangeMenuOpened(Menu_Dev_ChangeDesignproritaet __instance)
         {
-            if (active == null || !active.enabled.Value) return;
+            if (active == null || __instance == null) return;
+            active.changeMenu = __instance;
+            if (!active.enabled.Value) return;
             var sliders = GetChangeSliders(__instance);
             if (sliders == null) return;
             SetSliderMaximum(sliders, active.maximum.Value / 5);
@@ -276,15 +294,17 @@ namespace CharacterEditorDeluxe
 
         private static void AfterAddonMenuOpened(Menu_Dev_AddonDo __instance)
         {
-            if (active == null || !active.enabled.Value || __instance == null) return;
+            if (active == null || __instance == null) return;
             active.addonMenu = __instance;
+            if (!active.enabled.Value) return;
             RestoreAddonPriorities(__instance, GetAddonSliders(__instance));
         }
 
         private static void AfterMmoAddonMenuOpened(Menu_Dev_MMOAddon __instance)
         {
-            if (active == null || !active.enabled.Value || __instance == null) return;
+            if (active == null || __instance == null) return;
             active.mmoAddonMenu = __instance;
+            if (!active.enabled.Value) return;
             RestoreMmoAddonPriorities(__instance, GetMmoAddonSliders(__instance));
         }
 
@@ -351,14 +371,43 @@ namespace CharacterEditorDeluxe
 
         private static void AfterMenuClosed(Menu_DevGame __instance)
         {
-            if (active == null || !active.enabled.Value || __instance == null) return;
+            if (active == null || __instance == null) return;
+            active.menu = __instance;
+            if (!active.enabled.Value) return;
             active.rememberedPriorities = new[] { __instance.g_GameAP_Gameplay, __instance.g_GameAP_Grafik, __instance.g_GameAP_Sound, __instance.g_GameAP_Technik };
             for (int i = 0; i < active.priorityInputs.Length; i++) active.priorityInputs[i] = null;
         }
 
+        private static void AfterGameMenuInitialized(Menu_DevGame __instance)
+        {
+            if (active == null || __instance == null) return;
+            active.menu = __instance;
+            if (!active.enabled.Value) return;
+            SetSliderMaximum(GetSliders(__instance), active.maximum.Value / 5);
+        }
+
+        private static void AfterPlayerInitialized(mainScript __instance)
+        {
+            if (active == null || __instance == null) return;
+            active.SetPlayer(__instance);
+            Plugin.SetGame(__instance);
+        }
+
+        private static void AfterGameLoaded()
+        {
+            if (active == null) return;
+            mainScript player = Plugin.CurrentGame;
+            if (player == null) player = UnityEngine.Object.FindObjectOfType<mainScript>();
+            if (player == null) return;
+            active.SetPlayer(player);
+            Plugin.SetGame(player);
+        }
+
         private static void AfterNewGameMenuOpened(Menu_DevGame __instance)
         {
-            if (active == null || !active.enabled.Value) return;
+            if (active == null || __instance == null) return;
+            active.menu = __instance;
+            if (!active.enabled.Value) return;
             for (int i = 0; i < active.priorityInputs.Length; i++) active.priorityInputs[i] = null;
             if (active.rememberedPriorities == null) return;
             var sliders = GetSliders(__instance);

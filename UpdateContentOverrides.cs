@@ -20,6 +20,7 @@ namespace CharacterEditorDeluxe
         private const float SafeCategoryPointCap = 100f;
         private const float SafeUpdateBonusCap = 5f;
         private static UpdateContentOverrides active;
+        private static int loggedClampWarnings;
         internal readonly ConfigEntry<bool> Enabled;
         internal readonly ConfigEntry<int> Maximum;
         internal readonly ConfigEntry<int>[] Percent = new ConfigEntry<int>[8];
@@ -29,6 +30,10 @@ namespace CharacterEditorDeluxe
         private Vector2 scroll;
         private readonly Dictionary<int, double[]> pendingTaskGains = new Dictionary<int, double[]>();
         private static readonly FieldInfo SelectionField = AccessTools.Field(typeof(Menu_Dev_Update), "buttonAdds");
+        private static readonly FieldInfo UpdateGameField = AccessTools.Field(typeof(Menu_Dev_Update), "gS_");
+        private static readonly FieldInfo TaskGameField = AccessTools.Field(typeof(taskUpdate), "gS_");
+        private static readonly MethodInfo FindTaskGameMethod = AccessTools.Method(typeof(taskUpdate), "FindMyObject");
+        private mainScript player;
         private static bool[] Selections(Menu_Dev_Update source) { return (bool[])SelectionField.GetValue(source); }
 
         internal UpdateContentOverrides(ConfigFile config, ManualLogSource log)
@@ -55,10 +60,21 @@ namespace CharacterEditorDeluxe
             harmony.Patch(AccessTools.Method(typeof(Menu_Dev_Update), "UpdateGUI"), postfix: new HarmonyMethod(typeof(UpdateContentOverrides), nameof(RefreshLabels)));
             harmony.Patch(AccessTools.Method(typeof(taskUpdate), "Complete"), prefix: new HarmonyMethod(typeof(UpdateContentOverrides), nameof(BeforeComplete)), postfix: new HarmonyMethod(typeof(UpdateContentOverrides), nameof(AfterCompleteAll)));
             harmony.Patch(AccessTools.Method(typeof(taskUpdate), "Abbrechen"), prefix: new HarmonyMethod(typeof(UpdateContentOverrides), nameof(BeforeCancel)));
+            var playerInit = AccessTools.Method(typeof(mainScript), "InitNewGame");
+            if (playerInit != null)
+                harmony.Patch(playerInit, postfix: new HarmonyMethod(typeof(UpdateContentOverrides), nameof(AfterPlayerInitialized)));
+            var gameLoad = AccessTools.Method(typeof(savegameScript), "Load");
+            if (gameLoad != null)
+                harmony.Patch(gameLoad, postfix: new HarmonyMethod(typeof(UpdateContentOverrides), nameof(AfterGameLoaded)));
             log.LogInfo("Update content patches installed: per-item production points, quality and workload. Costs remain vanilla.");
         }
 
         internal void Uninstall() { harmony?.UnpatchSelf(); if (active == this) active = null; }
+
+        internal void SetPlayer(mainScript source)
+        {
+            if (source != null) player = source;
+        }
 
         internal void ResetToVanilla()
         {
@@ -119,6 +135,23 @@ namespace CharacterEditorDeluxe
             active.menu = __instance;
         }
 
+        private static void AfterPlayerInitialized(mainScript __instance)
+        {
+            if (active == null || __instance == null) return;
+            active.SetPlayer(__instance);
+            Plugin.SetGame(__instance);
+        }
+
+        private static void AfterGameLoaded()
+        {
+            if (active == null) return;
+            mainScript player = Plugin.CurrentGame;
+            if (player == null) player = UnityEngine.Object.FindObjectOfType<mainScript>();
+            if (player == null) return;
+            active.SetPlayer(player);
+            Plugin.SetGame(player);
+        }
+
         private static float Weight(int item)
         {
             return active != null && active.Enabled.Value ? Mathf.Clamp(active.Percent[item].Value, 0, active.Maximum.Value) / 2f : 1f;
@@ -156,10 +189,9 @@ namespace CharacterEditorDeluxe
         {
             __state = default;
             if (active == null || __instance.quality <= 1f) return;
-            AccessTools.Method(typeof(taskUpdate), "FindMyObject").Invoke(__instance, null);
-            var game = (gameScript)AccessTools.Field(typeof(taskUpdate), "gS_").GetValue(__instance);
-            var player = UnityEngine.Object.FindObjectOfType<mainScript>();
-            if (game == null || player == null || game.developerID != player.myID) return;
+            FindTaskGameMethod.Invoke(__instance, null);
+            var game = (gameScript)TaskGameField.GetValue(__instance);
+            if (game == null || active.player == null || game.developerID != active.player.myID) return;
             __state = new BonusSample { Game = game, Before = game.bonusSellsUpdates, Quality = __instance.quality, Count = Math.Max(0, game.amountUpdates) };
         }
 
@@ -175,7 +207,7 @@ namespace CharacterEditorDeluxe
             double[] gains;
             if (!active.pendingTaskGains.TryGetValue(__instance.GetInstanceID(), out gains)) return;
             active.pendingTaskGains.Remove(__instance.GetInstanceID());
-            gameScript game = (gameScript)AccessTools.Field(typeof(taskUpdate), "gS_").GetValue(__instance);
+            gameScript game = (gameScript)TaskGameField.GetValue(__instance);
             if (game == null || gains == null || gains.Length < 4) return;
             game.points_gameplay = AddExactGain(game.points_gameplay, gains[0], __instance.pointsGameplay, "gameplay", __instance.myID);
             game.points_grafik = AddExactGain(game.points_grafik, gains[1], __instance.pointsGrafik, "graphics", __instance.myID);
@@ -188,19 +220,22 @@ namespace CharacterEditorDeluxe
         {
             if (double.IsNaN(exactGain) || double.IsInfinity(exactGain))
             {
-                active.log.LogWarning("Ignored non-finite exact gain for " + field + " task=" + taskId + ".");
+                if (TryMarkClampWarning(field))
+                    active.log.LogWarning("Ignored non-finite exact gain for " + field + " task=" + taskId + ".");
                 return ClampSafe(current, field, taskId);
             }
             if (float.IsNaN(current) || float.IsInfinity(current))
             {
-                active.log.LogWarning("Reset non-finite current value for " + field + " task=" + taskId + ".");
+                if (TryMarkClampWarning(field))
+                    active.log.LogWarning("Reset non-finite current value for " + field + " task=" + taskId + ".");
                 current = 0f;
             }
             double corrected = (double)current + exactGain - vanillaGain;
             if (corrected <= 0d) return 0f;
             if (corrected >= SafeCategoryPointCap)
             {
-                active.log.LogWarning("Clamped final game field " + field + " for task=" + taskId + " to safe cap " + SafeCategoryPointCap.ToString("R", CultureInfo.InvariantCulture));
+                if (TryMarkClampWarning(field))
+                    active.log.LogWarning("Clamped final game field " + field + " for task=" + taskId + " to safe cap " + SafeCategoryPointCap.ToString("R", CultureInfo.InvariantCulture));
                 return SafeCategoryPointCap;
             }
             return (float)corrected;
@@ -210,7 +245,7 @@ namespace CharacterEditorDeluxe
         {
             __state = default;
             if (active == null || !active.Enabled.Value) return;
-            var game = (gameScript)AccessTools.Field(typeof(Menu_Dev_Update), "gS_").GetValue(__instance);
+            var game = (gameScript)UpdateGameField.GetValue(__instance);
             if (game == null) return;
             game.points_gameplay = ClampSafe(game.points_gameplay, "gameplay", game.myID);
             game.points_grafik = ClampSafe(game.points_grafik, "graphics", game.myID);
@@ -252,10 +287,24 @@ namespace CharacterEditorDeluxe
         {
             if (float.IsNaN(value) || float.IsInfinity(value) || value < 0f || value > limit)
             {
-                active.log.LogWarning("Clamped unsafe " + field + " for game=" + gameId + " to " + limit.ToString("R", CultureInfo.InvariantCulture));
+                if (TryMarkClampWarning(field))
+                    active.log.LogWarning("Clamped unsafe " + field + " for game=" + gameId + " to " + limit.ToString("R", CultureInfo.InvariantCulture));
                 return Mathf.Clamp(float.IsNaN(value) || float.IsInfinity(value) ? 0f : value, 0f, limit);
             }
             return value;
+        }
+
+        private static bool TryMarkClampWarning(string field)
+        {
+            int bit = field == "gameplay" ? 1
+                : field == "graphics" ? 2
+                : field == "sound" ? 4
+                : field == "technical" ? 8
+                : field == "update bonus" ? 16
+                : 0;
+            if (bit == 0 || (loggedClampWarnings & bit) != 0) return false;
+            loggedClampWarnings |= bit;
+            return true;
         }
 
         private static void AfterStart(StartSample __state)
@@ -276,7 +325,7 @@ namespace CharacterEditorDeluxe
         private static bool CalculatePoints(Menu_Dev_Update __instance, MethodBase __originalMethod, ref int __result)
         {
             if (active == null || !active.Enabled.Value) return true;
-            var game = (gameScript)AccessTools.Field(typeof(Menu_Dev_Update), "gS_").GetValue(__instance);
+            var game = (gameScript)UpdateGameField.GetValue(__instance);
             if (game == null) return true;
             int category = __originalMethod.Name == "GetP_Gameplay" ? 0 : __originalMethod.Name == "GetP_Grafik" ? 1 : __originalMethod.Name == "GetP_Sound" ? 2 : 3;
             double points = category == 0 ? game.points_gameplay : category == 1 ? game.points_grafik : category == 2 ? game.points_sound : game.points_technik;
@@ -291,4 +340,3 @@ namespace CharacterEditorDeluxe
 
     }
 }
-
