@@ -23,6 +23,8 @@ namespace CharacterEditorDeluxe
         private Harmony harmony;
         private Menu_DevGame menu;
         private Menu_Dev_ChangeDesignproritaet changeMenu;
+        private Menu_Dev_AddonDo addonMenu;
+        private Menu_Dev_MMOAddon mmoAddonMenu;
         private mainScript player;
         private bool lastEnabled;
         private int lastMaximum;
@@ -58,13 +60,25 @@ namespace CharacterEditorDeluxe
                 transpiler: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(PatchChangeValidation)));
             harmony.Patch(AccessTools.Method(typeof(Menu_Dev_ChangeDesignproritaet), "UpdateGesamtArbeitsprioritaet"),
                 transpiler: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(PatchTotalIndicator)));
+            harmony.Patch(AccessTools.Method(typeof(Menu_Dev_AddonDo), "Init"),
+                postfix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(AfterAddonMenuOpened)));
+            harmony.Patch(AccessTools.Method(typeof(Menu_Dev_AddonDo), "BUTTON_Start"),
+                transpiler: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(PatchAddonStartValidation)));
+            harmony.Patch(AccessTools.Method(typeof(Menu_Dev_AddonDo), "UpdateGesamtArbeitsprioritaet"),
+                transpiler: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(PatchTotalIndicator)));
+            harmony.Patch(AccessTools.Method(typeof(Menu_Dev_MMOAddon), "Init"),
+                postfix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(AfterMmoAddonMenuOpened)));
+            harmony.Patch(AccessTools.Method(typeof(Menu_Dev_MMOAddon), "BUTTON_Start"),
+                transpiler: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(PatchMmoAddonStartValidation)));
+            harmony.Patch(AccessTools.Method(typeof(Menu_Dev_MMOAddon), "UpdateGesamtArbeitsprioritaet"),
+                transpiler: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(PatchTotalIndicator)));
             harmony.Patch(AccessTools.Method(typeof(taskGame), "Work"),
                 prefix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(BeforeWork)));
             harmony.Patch(AccessTools.Method(typeof(savegameScript), "SaveGames"),
                 postfix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(AfterSaveGames)));
             harmony.Patch(AccessTools.Method(typeof(savegameScript), "LoadGames"),
                 postfix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(AfterLoadGames)));
-            log.LogInfo("Design priority patches installed: New Game validation, total indicator, and player development work.");
+            log.LogInfo("Design priority patches installed: game, paid addon, MMO addon, validation, and player development work.");
         }
 
         internal void Uninstall()
@@ -91,6 +105,8 @@ namespace CharacterEditorDeluxe
             if (next >= 0 && next < AllowedMaxima.Length && next != selected) maximum.Value = AllowedMaxima[next];
             GUILayout.EndHorizontal();
             allowOver100.Value = GUILayout.Toggle(allowOver100.Value, "Allow Total >100%");
+            GUILayout.Label("Supported: games, sequels, spinoffs, remasters, ports, contracts, paid addons, and MMO addons.");
+            GUILayout.Label("Game Update content uses the separate Game Updates tab.");
             if (enabled.Value && menu != null && menu.isActiveAndEnabled)
             {
                 GUILayout.BeginHorizontal();
@@ -110,27 +126,37 @@ namespace CharacterEditorDeluxe
             if (player == null) player = UnityEngine.Object.FindObjectOfType<mainScript>();
             if (menu == null) menu = UnityEngine.Object.FindObjectOfType<Menu_DevGame>();
             if (changeMenu == null) changeMenu = UnityEngine.Object.FindObjectOfType<Menu_Dev_ChangeDesignproritaet>();
+            if (addonMenu == null) addonMenu = UnityEngine.Object.FindObjectOfType<Menu_Dev_AddonDo>();
+            if (mmoAddonMenu == null) mmoAddonMenu = UnityEngine.Object.FindObjectOfType<Menu_Dev_MMOAddon>();
+            bool nowEnabled = enabled.Value;
+            int nowMaximum = NormalizeMaximum(maximum.Value);
+            if (maximum.Value != nowMaximum) maximum.Value = nowMaximum;
+            int rawMax = nowEnabled ? nowMaximum / 5 : 20;
+            bool restoreVanilla = lastEnabled && !nowEnabled;
             if (changeMenu != null && changeMenu.isActiveAndEnabled)
             {
                 var changeSliders = GetChangeSliders(changeMenu);
                 if (changeSliders != null)
-                    foreach (Slider slider in changeSliders) slider.maxValue = enabled.Value ? maximum.Value / 5 : 20;
+                    SetSliderMaximum(changeSliders, rawMax);
             }
-            if (menu == null || !menu.isActiveAndEnabled) return;
-            bool nowEnabled = enabled.Value;
-            int nowMaximum = NormalizeMaximum(maximum.Value);
-            if (maximum.Value != nowMaximum) maximum.Value = nowMaximum;
-            if (lastEnabled == nowEnabled && lastMaximum == nowMaximum && SlidersMatch(menu, nowEnabled ? nowMaximum / 5 : 20)) return;
-            var sliders = GetSliders(menu);
-            if (sliders == null) return;
-            int rawMax = nowEnabled ? nowMaximum / 5 : 20;
-            foreach (Slider slider in sliders) slider.maxValue = rawMax;
-            if (!nowEnabled && lastEnabled && Total(menu) > 100)
+            UpdateAddonMenu(addonMenu, rawMax, restoreVanilla);
+            UpdateMmoAddonMenu(mmoAddonMenu, rawMax, restoreVanilla);
+            if (menu != null && menu.isActiveAndEnabled && !(lastEnabled == nowEnabled && lastMaximum == nowMaximum && SlidersMatch(menu, rawMax)))
             {
-                // Restore the four ordinary 25% defaults when disabling the cheat in an open editor.
-                foreach (Slider slider in sliders) slider.value = 5f;
-                menu.g_GameAP_Gameplay = menu.g_GameAP_Grafik = menu.g_GameAP_Sound = menu.g_GameAP_Technik = 5;
-                for (int i = 0; i < priorityInputs.Length; i++) priorityInputs[i] = null;
+                var sliders = GetSliders(menu);
+                if (sliders != null)
+                {
+                    SetSliderMaximum(sliders, rawMax);
+                    if (restoreVanilla && Total(menu) > 100)
+                    {
+                        SetSliderValues(sliders, new[] { 5, 5, 5, 5 });
+                        menu.SetAP_Gameplay();
+                        menu.SetAP_Grafik();
+                        menu.SetAP_Sound();
+                        menu.SetAP_Technik();
+                        for (int i = 0; i < priorityInputs.Length; i++) priorityInputs[i] = null;
+                    }
+                }
             }
             lastEnabled = nowEnabled;
             lastMaximum = nowMaximum;
@@ -144,12 +170,27 @@ namespace CharacterEditorDeluxe
 
         private static Slider[] GetSliders(Menu_DevGame source)
         {
-            if (source.uiObjects == null || source.uiObjects.Length <= 100) return null;
+            return GetSliders(source == null ? null : source.uiObjects, 97);
+        }
+
+        private static Slider[] GetAddonSliders(Menu_Dev_AddonDo source)
+        {
+            return GetSliders(source == null ? null : source.uiObjects, 42);
+        }
+
+        private static Slider[] GetMmoAddonSliders(Menu_Dev_MMOAddon source)
+        {
+            return GetSliders(source == null ? null : source.uiObjects, 42);
+        }
+
+        private static Slider[] GetSliders(GameObject[] objects, int firstIndex)
+        {
+            if (objects == null || objects.Length <= firstIndex + 3) return null;
             var result = new Slider[4];
             for (int i = 0; i < 4; i++)
             {
-                if (source.uiObjects[97 + i] == null) return null;
-                result[i] = source.uiObjects[97 + i].GetComponent<Slider>();
+                if (objects[firstIndex + i] == null) return null;
+                result[i] = objects[firstIndex + i].GetComponent<Slider>();
                 if (result[i] == null) return null;
             }
             return result;
@@ -157,15 +198,19 @@ namespace CharacterEditorDeluxe
 
         private static Slider[] GetChangeSliders(Menu_Dev_ChangeDesignproritaet source)
         {
-            if (source.uiObjects == null || source.uiObjects.Length <= 8) return null;
-            var result = new Slider[4];
-            for (int i = 0; i < result.Length; i++)
-            {
-                if (source.uiObjects[5 + i] == null) return null;
-                result[i] = source.uiObjects[5 + i].GetComponent<Slider>();
-                if (result[i] == null) return null;
-            }
-            return result;
+            return GetSliders(source == null ? null : source.uiObjects, 5);
+        }
+
+        private static void SetSliderMaximum(Slider[] sliders, int rawMax)
+        {
+            if (sliders == null) return;
+            foreach (Slider slider in sliders) slider.maxValue = rawMax;
+        }
+
+        private static void SetSliderValues(Slider[] sliders, int[] values)
+        {
+            if (sliders == null || values == null) return;
+            for (int i = 0; i < sliders.Length && i < values.Length; i++) sliders[i].value = values[i];
         }
 
         private static bool SlidersMatch(Menu_DevGame source, int rawMax)
@@ -218,8 +263,7 @@ namespace CharacterEditorDeluxe
             if (active == null || !active.enabled.Value) return;
             var sliders = GetSliders(__instance);
             if (sliders == null) return;
-            int rawMax = active.maximum.Value / 5;
-            foreach (Slider slider in sliders) slider.maxValue = rawMax;
+            SetSliderMaximum(sliders, active.maximum.Value / 5);
         }
 
         private static void BeforeChangeMenuOpened(Menu_Dev_ChangeDesignproritaet __instance)
@@ -227,7 +271,82 @@ namespace CharacterEditorDeluxe
             if (active == null || !active.enabled.Value) return;
             var sliders = GetChangeSliders(__instance);
             if (sliders == null) return;
-            foreach (Slider slider in sliders) slider.maxValue = active.maximum.Value / 5;
+            SetSliderMaximum(sliders, active.maximum.Value / 5);
+        }
+
+        private static void AfterAddonMenuOpened(Menu_Dev_AddonDo __instance)
+        {
+            if (active == null || !active.enabled.Value || __instance == null) return;
+            active.addonMenu = __instance;
+            RestoreAddonPriorities(__instance, GetAddonSliders(__instance));
+        }
+
+        private static void AfterMmoAddonMenuOpened(Menu_Dev_MMOAddon __instance)
+        {
+            if (active == null || !active.enabled.Value || __instance == null) return;
+            active.mmoAddonMenu = __instance;
+            RestoreMmoAddonPriorities(__instance, GetMmoAddonSliders(__instance));
+        }
+
+        private static int[] ReadSafePriorities(gameScript game)
+        {
+            int rawMax = active.maximum.Value / 5;
+            if (game == null) return new[] { 5, 5, 5, 5 };
+            return new[]
+            {
+                Mathf.Clamp(game.gameAP_Gameplay, 0, rawMax),
+                Mathf.Clamp(game.gameAP_Grafik, 0, rawMax),
+                Mathf.Clamp(game.gameAP_Sound, 0, rawMax),
+                Mathf.Clamp(game.gameAP_Technik, 0, rawMax)
+            };
+        }
+
+        private static void RestoreAddonPriorities(Menu_Dev_AddonDo source, Slider[] sliders)
+        {
+            if (sliders == null) return;
+            SetSliderMaximum(sliders, active.maximum.Value / 5);
+            SetSliderValues(sliders, ReadSafePriorities(source.gS_));
+            source.SetAP_Gameplay();
+            source.SetAP_Grafik();
+            source.SetAP_Sound();
+            source.SetAP_Technik();
+        }
+
+        private static void RestoreMmoAddonPriorities(Menu_Dev_MMOAddon source, Slider[] sliders)
+        {
+            if (sliders == null) return;
+            SetSliderMaximum(sliders, active.maximum.Value / 5);
+            SetSliderValues(sliders, ReadSafePriorities(source.gS_));
+            source.SetAP_Gameplay();
+            source.SetAP_Grafik();
+            source.SetAP_Sound();
+            source.SetAP_Technik();
+        }
+
+        private static void UpdateAddonMenu(Menu_Dev_AddonDo source, int rawMax, bool restoreVanilla)
+        {
+            if (source == null || !source.isActiveAndEnabled) return;
+            Slider[] sliders = GetAddonSliders(source);
+            SetSliderMaximum(sliders, rawMax);
+            if (!restoreVanilla) return;
+            SetSliderValues(sliders, new[] { 5, 5, 5, 5 });
+            source.SetAP_Gameplay();
+            source.SetAP_Grafik();
+            source.SetAP_Sound();
+            source.SetAP_Technik();
+        }
+
+        private static void UpdateMmoAddonMenu(Menu_Dev_MMOAddon source, int rawMax, bool restoreVanilla)
+        {
+            if (source == null || !source.isActiveAndEnabled) return;
+            Slider[] sliders = GetMmoAddonSliders(source);
+            SetSliderMaximum(sliders, rawMax);
+            if (!restoreVanilla) return;
+            SetSliderValues(sliders, new[] { 5, 5, 5, 5 });
+            source.SetAP_Gameplay();
+            source.SetAP_Grafik();
+            source.SetAP_Sound();
+            source.SetAP_Technik();
         }
 
         private static void AfterMenuClosed(Menu_DevGame __instance)
@@ -263,6 +382,16 @@ namespace CharacterEditorDeluxe
             return PatchValidation(instructions, typeof(Menu_Dev_ChangeDesignproritaet));
         }
 
+        private static IEnumerable<CodeInstruction> PatchAddonStartValidation(IEnumerable<CodeInstruction> instructions)
+        {
+            return PatchValidation(instructions, typeof(Menu_Dev_AddonDo));
+        }
+
+        private static IEnumerable<CodeInstruction> PatchMmoAddonStartValidation(IEnumerable<CodeInstruction> instructions)
+        {
+            return PatchValidation(instructions, typeof(Menu_Dev_MMOAddon));
+        }
+
         private static IEnumerable<CodeInstruction> PatchValidation(IEnumerable<CodeInstruction> instructions, Type menuType)
         {
             var list = new List<CodeInstruction>(instructions);
@@ -280,7 +409,7 @@ namespace CharacterEditorDeluxe
                     }
                     found++;
                 }
-            if (found != 2) throw new InvalidOperationException("Expected two New Game priority total checks; found " + found);
+            if (found != 2) throw new InvalidOperationException("Expected two priority total checks; found " + found);
             return list;
         }
 
@@ -315,10 +444,11 @@ namespace CharacterEditorDeluxe
             gameScript game = __instance.gS_;
             // ownerID may be the external publisher; developerID identifies the studio doing the work.
             if (game == null || active.player == null || game.developerID != active.player.myID) return;
+            if (!active.enabled.Value) return;
             int raw = ClampStoredPriority(game, __1);
             float original = __0;
             float before = ReadPoints(game, __1);
-            if (!active.enabled.Value || raw <= 20) return;
+            if (raw <= 20) return;
             if (float.IsNaN(original) || float.IsInfinity(original) || float.IsNaN(before) || float.IsInfinity(before))
             {
                 active.log.LogWarning("Priority work skipped non-finite source value for game=" + game.myID + " category=" + __1);

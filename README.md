@@ -1,6 +1,6 @@
 # Character Editor Deluxe for Mad Games Tycoon 2
 
-Version 1.0.0
+Version 1.0.5
 
 BepInEx character editor and safe gameplay cheat mod for Mad Games Tycoon 2.
 
@@ -13,11 +13,13 @@ Character Editor Deluxe edits player employees and selected player-only developm
 - Lock edited skills against vanilla learning caps and resets.
 - Lock motivation independently for each employee.
 - Enable, disable, or clear perks resolved from the installed game's official names and descriptions.
-- Apply all positive perks without auto-enabling negative, neutral, or unresolved perks.
-- Keep negative perks manual-only and hide unknown entries by default.
+- Apply official positive perks directly to the selected employee or all player employees without auto-enabling neutral, negative, or unresolved perks.
+- Classify CEO, Loyal, Nature Lover, and Modest as neutral. Classify Greedy, Unfocused, Untalented, Immunocompromised, Unlucky, Messy, and Stress-Averse as negative.
+- Keep neutral and negative perks manual-only and hide unresolved entries until their official mapping is available.
 - Apply edits to one employee or all current player employees.
 - Optionally maximize newly hired employees after initialization.
-- Extended Design Priority supports a verified maximum of 200% per category; normal mode remains at 100%.
+- Extended Design / Work Priority supports a verified maximum of 200% per category; normal mode remains at 100%.
+- Work Priority applies to normal games, sequels, spinoffs, remasters, ports, contracts, paid addons, and MMO addons through their shared `gameAP_*` task path.
 - Set real Game Update content percentages up to the conservative 100% safety maximum.
 - Preserve edited values and lock metadata through normal save and load.
 
@@ -50,10 +52,11 @@ Press **F8** to open or close Character Editor Deluxe.
 - **Lock Stats** protects the selected employee's edited skills.
 - **Lock Motivation** protects the selected employee's current motivation.
 - **Auto-max new employees** applies configured maximums to new hires.
-- **Extended Design Priority** controls the safe 100% or 200% per-category maximum and total-limit override.
+- **WORK PRIORITY** controls the safe 100% or 200% per-category maximum and total-limit override for games and supported addon work.
 - **Game Update content percentages** enables real per-item update percentages while the Game Update menu is open.
 - Game Update content is fixed at the conservative 100% safety maximum.
-- Perks are grouped as positive, negative, neutral, and unknown; negative entries require an explicit manual toggle and unknown entries are hidden by default.
+- **PERKS** shows Positive, Neutral, and Negative selected counts. Positive perks can be applied directly to the selected employee or all employees; neutral and negative entries require an explicit manual toggle.
+- Unresolved perks are hidden and are never included in automatic actions.
 - Vanilla Game Update content is 2% per selected item.
 
 Disabling an optional cheat restores vanilla calculations for future actions. Existing values already stored in a save remain part of that save.
