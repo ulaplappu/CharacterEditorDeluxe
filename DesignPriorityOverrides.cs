@@ -302,19 +302,22 @@ namespace CharacterEditorDeluxe
             internal float Before;
             internal float Original;
             internal float Effective;
+            internal bool Tracing;
         }
 
         private static void BeforeWork(taskGame __instance, ref float __0, int __1, out WorkSample __state)
         {
             __state = default;
-            if (active == null || !active.enabled.Value || __1 < 0 || __1 > 3 || __instance == null) return;
+            if (active == null || __1 < 0 || __1 > 3 || __instance == null) return;
             gameScript game = __instance.gS_;
             // ownerID may be the external publisher; developerID identifies the studio doing the work.
             if (game == null || active.player == null || game.developerID != active.player.myID) return;
             int raw = __1 == 0 ? game.gameAP_Gameplay : __1 == 1 ? game.gameAP_Grafik : __1 == 2 ? game.gameAP_Sound : game.gameAP_Technik;
-            if (raw <= 20) return;
             float original = __0;
             float before = ReadPoints(game, __1);
+            bool tracing = UpdateContentOverrides.IsTracing;
+            if (tracing) __state = new WorkSample { Game = game, Category = __1, Before = before, Original = original, Effective = original, Tracing = true };
+            if (!active.enabled.Value || raw <= 20) return;
             if (float.IsNaN(original) || float.IsInfinity(original) || float.IsNaN(before) || float.IsInfinity(before))
             {
                 active.log.LogWarning("Priority work skipped non-finite source value for game=" + game.myID + " category=" + __1);
@@ -327,15 +330,18 @@ namespace CharacterEditorDeluxe
                 return;
             }
             __0 = (float)boosted;
-            __state = new WorkSample { Game = game, Category = __1, Before = before, Original = original, Effective = __0 };
+            __state = new WorkSample { Game = game, Category = __1, Before = before, Original = original, Effective = __0, Tracing = tracing };
         }
 
         private static void AfterWork(WorkSample __state)
         {
-            if (active == null || __state.Game == null) return;
+            if (active == null || __state.Game == null || !UpdateContentOverrides.IsTracing) return;
             string key = __state.Game.myID.ToString(CultureInfo.InvariantCulture) + ":" + __state.Category.ToString(CultureInfo.InvariantCulture);
-            if (!active.loggedWork.Add(key)) return;
-            active.log.LogInfo("Priority work game=" + __state.Game.myID + " raw=" + __state.Game.gameAP_Gameplay + "/" + __state.Game.gameAP_Grafik + "/" + __state.Game.gameAP_Sound + "/" + __state.Game.gameAP_Technik + " category=" + __state.Category + " input=" + __state.Original.ToString("0.###", CultureInfo.InvariantCulture) + " boosted=" + __state.Effective.ToString("0.###", CultureInfo.InvariantCulture) + " pointsBefore=" + __state.Before.ToString("0.###", CultureInfo.InvariantCulture) + " pointsAfter=" + ReadPoints(__state.Game, __state.Category).ToString("0.###", CultureInfo.InvariantCulture));
+            float after = ReadPoints(__state.Game, __state.Category);
+            bool invalid = float.IsNaN(after) || float.IsInfinity(after) || after < 0f ||
+                           float.IsNaN(__state.Effective) || float.IsInfinity(__state.Effective) || __state.Effective < 0f;
+            if (!invalid && !active.loggedWork.Add(key)) return;
+            active.log.LogInfo("Priority work game=" + __state.Game.myID + " enabled=" + active.enabled.Value + " raw=" + __state.Game.gameAP_Gameplay + "/" + __state.Game.gameAP_Grafik + "/" + __state.Game.gameAP_Sound + "/" + __state.Game.gameAP_Technik + " category=" + __state.Category + " input=" + __state.Original.ToString("R", CultureInfo.InvariantCulture) + " passedToVanilla=" + __state.Effective.ToString("R", CultureInfo.InvariantCulture) + " pointsBefore=" + __state.Before.ToString("R", CultureInfo.InvariantCulture) + " pointsAfter=" + after.ToString("R", CultureInfo.InvariantCulture) + " delta=" + ((double)after - __state.Before).ToString("R", CultureInfo.InvariantCulture) + " numeric=" + (invalid ? "invalid" : "ok"));
         }
 
         private static float ReadPoints(gameScript game, int category)
