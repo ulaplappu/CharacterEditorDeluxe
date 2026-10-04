@@ -9,7 +9,7 @@ using UnityEngine;
 
 namespace CharacterEditorDeluxe
 {
-    [BepInPlugin("com.codex.mgt2.charactereditordeluxe", "MGT2 Character Editor Deluxe", "1.0.5")]
+    [BepInPlugin("com.codex.mgt2.charactereditordeluxe", "MGT2 Character Editor Deluxe", "1.0.6")]
     public sealed class Plugin : BaseUnityPlugin
     {
         private static Plugin activePlugin;
@@ -405,7 +405,7 @@ namespace CharacterEditorDeluxe
             if (int.TryParse(capText, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed)) cap = Mathf.Clamp(parsed, 1, 100);
             configuredCap.Value = cap;
             if (GUILayout.Button("Reset cheats to vanilla")) ResetToVanilla();
-            GUILayout.Label("Version 1.0.5 | F8 toggles this window | window position and size are saved.");
+            GUILayout.Label("Version 1.0.6 | F8 toggles this window | window position and size are saved.");
             GUILayout.EndVertical();
         }
 

@@ -5,14 +5,52 @@ obj/
 *.user
 *.suo
 *.pdb
-
-# Local game and mod-loader files
-BepInEx/
-*_Data/
-*.sav
+*.mdb
+*.dll
+*.exe
+*.so
+*.dylib
+*.tmp
+*.temp
+*.trace
+*.prof
+*.profile
+*.diag
+*.etl
+*.dump
+*.dmp
+*.bak
+*.orig
+*.rej
 *.log
-.analysis/
 
-# Keep the intentional release artifact
+# Analysis output and temporary diagnostics
+.analysis/
+diagnostics/
+temp/
+tmp/
+
+# Game saves, logs, and generated Unity data
+logs/
+saves/
+*.sav
+*_Data/
+Library/
+Temp/
+Logs/
+UserSettings/
+
+# Local game, Unity, and mod-loader files
+BepInEx/
+MonoBleedingEdge/
+UnityPlayer.dll
+doorstop_config.ini
+winhttp.dll
+steam_api*.dll
+third-party-mods/
+third_party_mods/
+ThirdPartyMods/
+
+# Keep only the intentional release artifact
 !Release/
 !Release/CharacterEditorDeluxe.dll

@@ -6,11 +6,12 @@
     <AssemblyName>CharacterEditorDeluxe</AssemblyName>
     <RootNamespace>CharacterEditorDeluxe</RootNamespace>
     <Description>BepInEx character editor and safe gameplay cheat mod for Mad Games Tycoon 2.</Description>
+    <Product>Character Editor Deluxe</Product>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
-    <Version>1.0.5</Version>
-    <AssemblyVersion>1.0.5</AssemblyVersion>
-    <FileVersion>1.0.5</FileVersion>
-    <InformationalVersion>1.0.5</InformationalVersion>
+    <Version>1.0.6</Version>
+    <AssemblyVersion>1.0.6</AssemblyVersion>
+    <FileVersion>1.0.6</FileVersion>
+    <InformationalVersion>1.0.6</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 

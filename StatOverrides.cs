@@ -70,18 +70,6 @@ namespace CharacterEditorDeluxe
             harmony.Patch(method, before, after);
         }
 
-        internal bool IsStatsLocked(characterScript character)
-        {
-            Record record;
-            return character != null && records.TryGetValue(character, out record) && record.LockStats;
-        }
-
-        internal bool IsMotivationLocked(characterScript character)
-        {
-            Record record;
-            return character != null && records.TryGetValue(character, out record) && record.LockMotivation;
-        }
-
         internal void SetStatsLock(characterScript character, bool value)
         {
             if (character == null) return;

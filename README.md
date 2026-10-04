@@ -1,87 +1,79 @@
-# Character Editor Deluxe for Mad Games Tycoon 2
+# Character Editor Deluxe
 
-Version 1.0.5
+Version 1.0.6
 
-BepInEx character editor and safe gameplay cheat mod for Mad Games Tycoon 2.
-
-Character Editor Deluxe edits player employees and selected player-only development options. It keeps values inside conservative ranges supported by the game so employee, design, update, review, demand, sales, money, save, and load systems continue to use valid numbers.
+An unofficial BepInEx plugin for editing employees and safe development options in Mad Games Tycoon 2.
 
 ## Features
 
-- Edit nine employee attributes on MGT2's safe 0-100 scale.
-- Keep motivation between 0 and 100.
-- Lock edited skills against vanilla learning caps and resets.
-- Lock motivation independently for each employee.
-- Enable, disable, or clear perks resolved from the installed game's official names and descriptions.
-- Apply official positive perks directly to the selected employee or all player employees without auto-enabling neutral, negative, or unresolved perks.
-- Classify CEO, Loyal, Nature Lover, and Modest as neutral. Classify Greedy, Unfocused, Untalented, Immunocompromised, Unlucky, Messy, and Stress-Averse as negative.
-- Keep neutral and negative perks manual-only and hide unresolved entries until their official mapping is available.
-- Apply edits to one employee or all current player employees.
-- Optionally maximize newly hired employees after initialization.
-- Extended Design / Work Priority supports a verified maximum of 200% per category; normal mode remains at 100%.
-- Work Priority applies to normal games, sequels, spinoffs, remasters, ports, contracts, paid addons, and MMO addons through their shared `gameAP_*` task path.
-- Set real Game Update content percentages up to the conservative 100% safety maximum.
-- Preserve edited values and lock metadata through normal save and load.
+- Edit employee skills and motivation on the game's 0–100 scale.
+- Lock edited stats and motivation against vanilla changes.
+- Apply positive-only perks to one employee or all employees.
+- Keep neutral perks (CEO, Loyal, Nature Lover, Modest) and negative perks (Greedy, Unfocused, Untalented, Immunocompromised, Unlucky, Messy, Stress-Averse) manual-only.
+- Bulk-edit current employees and optionally auto-max new hires.
+- Extended Design / Work Priority up to 200% per category, including normal games, sequels, spinoffs, remasters, ports, contracts, Paid Addons, and MMO Addons.
+- Set Game Update content contributions up to the safe 100% maximum.
+- Apply numeric range and overflow protections before modified values reach game calculations.
 
-Game Update percentages affect update category points, quality, and workload. Update prices and player cash remain on the vanilla calculation. Values above the safe limits are rejected or clamped before they reach MGT2. This prevents unsafe integer conversions, Int32 saturation, NaN, and infinity from reaching downstream formulas.
+## Performance
+
+Version 1.0.6 removes recurring `FindObjectOfType` scene searches from the design-priority update loop and uses lifecycle hooks and cached menu references instead. This removes the measured priority-updater spikes of approximately 65 ms; steady-state updater time measured approximately 0.001–0.002 ms per call.
+
+The release also reduces unnecessary closed-window polling, repeated tooltip/stat refresh work, temporary allocations, and repetitive safety-cap log messages. These are mod-specific measurements and code-path changes; they do not establish a full-game FPS improvement.
 
 ## Requirements
 
-- Mad Games Tycoon 2 for Windows.
-- BepInEx 5 installed in the game directory.
-- The game-managed assemblies from the user's own installation when compiling.
-- .NET SDK capable of building .NET Standard 2.1 projects.
+- Mad Games Tycoon 2.
+- BepInEx 5 installed for the game.
+- For building: .NET SDK with .NET Standard 2.1 support and the game-managed assemblies from your own installation.
 
-No game assemblies, Unity assemblies, BepInEx binaries, saves, logs, or other mods are included in this repository.
+## Installation
 
-## Install
+1. Download `CharacterEditorDeluxe.dll` from the GitHub Release assets.
+2. Create this folder in the game installation if it does not exist:
 
-1. Download `CharacterEditorDeluxe.dll` from the release package.
-2. Create `BepInEx\plugins\CharacterEditorDeluxe` inside the game directory.
-3. Copy the DLL into that folder.
+   ```text
+   BepInEx\plugins\CharacterEditorDeluxe\
+   ```
+
+3. Copy `CharacterEditorDeluxe.dll` into that folder.
 4. Start the game. BepInEx creates the configuration file at:
 
-   `BepInEx\config\com.codex.mgt2.charactereditordeluxe.cfg`
+   ```text
+   BepInEx\config\com.codex.mgt2.charactereditordeluxe.cfg
+   ```
 
 ## Controls
 
-Press **F8** to open or close Character Editor Deluxe.
+Press **F8** to open or close the editor. Use the employee arrows to select an employee, stage changes, and apply them to the selected employee or all employees. The editor tabs contain the perk, priority, update-content, and safety options.
 
-- Use the employee arrows to select a character.
-- Stage stat and perk changes, then apply them to the selected employee or all employees.
-- **Lock Stats** protects the selected employee's edited skills.
-- **Lock Motivation** protects the selected employee's current motivation.
-- **Auto-max new employees** applies configured maximums to new hires.
-- **WORK PRIORITY** controls the safe 100% or 200% per-category maximum and total-limit override for games and supported addon work.
-- **Game Update content percentages** enables real per-item update percentages while the Game Update menu is open.
-- Game Update content is fixed at the conservative 100% safety maximum.
-- **PERKS** shows Positive, Neutral, and Negative selected counts. Positive perks can be applied directly to the selected employee or all employees; neutral and negative entries require an explicit manual toggle.
-- Unresolved perks are hidden and are never included in automatic actions.
-- Vanilla Game Update content is 2% per selected item.
+## Safe Limits
 
-Disabling an optional cheat restores vanilla calculations for future actions. Existing values already stored in a save remain part of that save.
+- Employee skills and motivation: 0–100.
+- Extended Design / Work Priority: at most 200% per category.
+- Game Update content: at most 100%.
+- Non-finite and out-of-range values are rejected or clamped before use.
+- Disabling an optional feature restores vanilla calculations for future actions; values already saved remain in the save.
+
+## Compatibility
+
+The mod targets Mad Games Tycoon 2 with BepInEx 5. Its extended priority hooks support normal game development and the listed game/addon types. Other plugins may also patch game methods; compatibility with every mod combination is not guaranteed.
+
+This repository does not include game files, Unity assemblies, BepInEx binaries, saves, logs, or third-party mods.
 
 ## Build
 
-The project resolves required references from your own game installation through the `MGT2_DIR` MSBuild property. Nothing from the game is copied into the repository.
-
-PowerShell:
+Set `MGT2_DIR` to your Mad Games Tycoon 2 installation, then build the Release configuration:
 
 ```powershell
 $env:MGT2_DIR = "C:\Path\To\Mad Games Tycoon 2"
 dotnet build .\CharacterEditorDeluxe.csproj -c Release
 ```
 
-Alternatively, pass the property directly:
-
-```powershell
-dotnet build .\CharacterEditorDeluxe.csproj -c Release -p:MGT2_DIR="C:\Path\To\Mad Games Tycoon 2"
-```
-
-The output DLL is written to `bin\Release\netstandard2.1\CharacterEditorDeluxe.dll`. The intentionally tracked release copy is `Release\CharacterEditorDeluxe.dll`.
+The build output is `bin\Release\netstandard2.1\CharacterEditorDeluxe.dll`. The synchronized release artifact is `Release\CharacterEditorDeluxe.dll`.
 
 ## Disclaimer
 
-This is an unofficial, player-created mod and is not affiliated with or endorsed by Eggcode, the developer or publisher of Mad Games Tycoon 2, Unity Technologies, BepInEx, or Harmony.
+This is an unofficial, player-created mod and is not affiliated with or endorsed by Eggcode, the developer or publisher of Mad Games Tycoon 2, Unity Technologies, BepInEx, or Harmony. Use it at your own risk and keep backups of important saves.
 
-Use the mod at your own risk and keep backups of important saves. The MIT License applies only to the original Character Editor Deluxe source in this repository. Mad Games Tycoon 2, Unity, BepInEx, Harmony, and all related binaries, assets, names, and trademarks remain the property of their respective owners and are not distributed under this license.
+The MIT License applies only to the original Character Editor Deluxe source in this repository. Game software, assets, names, trademarks, and third-party libraries remain the property of their respective owners.
