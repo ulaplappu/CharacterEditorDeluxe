@@ -101,7 +101,7 @@ namespace CharacterEditorDeluxe
             overrides = new StatOverrides(Logger, globalLock);
             overrides.Install();
             designPriorities = new DesignPriorityOverrides(Logger,
-                Config.Bind("Design Priority", "UncappedDesignPriority", false, "Allow player game design priorities above 100%."),
+                Config.Bind("Design Priority", "ExtendedDesignPriority", false, "Enable Extended Design Priority up to the safe 200% per-category limit."),
                 Config.Bind("Design Priority", "PriorityMax", 100, "Safe maximum priority per slider: 100 or 200 percent."),
                 Config.Bind("Design Priority", "AllowTotalAbove100", true, "Allow a total above 100% while the priority cheat is enabled."));
             designPriorities.Install();

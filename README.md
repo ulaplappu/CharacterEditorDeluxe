@@ -2,22 +2,26 @@
 
 Version 1.0.0
 
-Character Editor Deluxe is a BepInEx 5 plugin for editing player employees and enabling optional player-only development cheats in Mad Games Tycoon 2.
+BepInEx character editor and safe gameplay cheat mod for Mad Games Tycoon 2.
+
+Character Editor Deluxe edits player employees and selected player-only development options. It keeps values inside conservative ranges supported by the game so employee, design, update, review, demand, sales, money, save, and load systems continue to use valid numbers.
 
 ## Features
 
 - Edit nine employee attributes on MGT2's safe 0-100 scale.
+- Keep motivation between 0 and 100.
 - Lock edited skills against vanilla learning caps and resets.
 - Lock motivation independently for each employee.
-- Enable, disable, or clear officially resolved employee perks.
-- Apply all positive perks without auto-enabling negative or unresolved perks.
+- Enable, disable, or clear perks resolved from the installed game's official names and descriptions.
+- Apply all positive perks without auto-enabling negative, neutral, or unresolved perks.
+- Keep negative perks manual-only and hide unknown entries by default.
 - Apply edits to one employee or all current player employees.
 - Optionally maximize newly hired employees after initialization.
-- Raise Design Priority limits and allow totals above 100%.
+- Extended Design Priority supports a verified maximum of 200% per category; normal mode remains at 100%.
 - Set real Game Update content percentages up to the conservative 100% safety maximum.
 - Preserve edited values and lock metadata through normal save and load.
 
-Game Update percentages affect update category points, quality, and workload. Update prices and player cash remain on the vanilla calculation.
+Game Update percentages affect update category points, quality, and workload. Update prices and player cash remain on the vanilla calculation. Values above the safe limits are rejected or clamped before they reach MGT2. This prevents unsafe integer conversions, Int32 saturation, NaN, and infinity from reaching downstream formulas.
 
 ## Requirements
 
@@ -26,7 +30,7 @@ Game Update percentages affect update category points, quality, and workload. Up
 - The game-managed assemblies from the user's own installation when compiling.
 - .NET SDK capable of building .NET Standard 2.1 projects.
 
-No game assemblies, Unity assemblies, BepInEx binaries, saves, or other mods are included in this repository.
+No game assemblies, Unity assemblies, BepInEx binaries, saves, logs, or other mods are included in this repository.
 
 ## Install
 
@@ -46,10 +50,10 @@ Press **F8** to open or close Character Editor Deluxe.
 - **Lock Stats** protects the selected employee's edited skills.
 - **Lock Motivation** protects the selected employee's current motivation.
 - **Auto-max new employees** applies configured maximums to new hires.
-- **Uncapped Design Priority** controls the priority maximum and total-limit override.
+- **Extended Design Priority** controls the safe 100% or 200% per-category maximum and total-limit override.
 - **Game Update content percentages** enables real per-item update percentages while the Game Update menu is open.
-- **Update % Max** is fixed at the conservative 100% safety maximum.
-- Perks are grouped as positive, negative, and unknown; negative and unknown entries are hidden unless explicitly shown.
+- Game Update content is fixed at the conservative 100% safety maximum.
+- Perks are grouped as positive, negative, neutral, and unknown; negative entries require an explicit manual toggle and unknown entries are hidden by default.
 - Vanilla Game Update content is 2% per selected item.
 
 Disabling an optional cheat restores vanilla calculations for future actions. Existing values already stored in a save remain part of that save.
@@ -71,7 +75,7 @@ Alternatively, pass the property directly:
 dotnet build .\CharacterEditorDeluxe.csproj -c Release -p:MGT2_DIR="C:\Path\To\Mad Games Tycoon 2"
 ```
 
-The output DLL is written to `bin\Release\netstandard2.1\CharacterEditorDeluxe.dll`.
+The output DLL is written to `bin\Release\netstandard2.1\CharacterEditorDeluxe.dll`. The intentionally tracked release copy is `Release\CharacterEditorDeluxe.dll`.
 
 ## Disclaimer
 

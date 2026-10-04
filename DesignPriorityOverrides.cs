@@ -83,7 +83,7 @@ namespace CharacterEditorDeluxe
 
         internal void DrawOptions()
         {
-            enabled.Value = GUILayout.Toggle(enabled.Value, "Uncapped Design Priority");
+            enabled.Value = GUILayout.Toggle(enabled.Value, "Extended Design Priority");
             GUILayout.BeginHorizontal();
             GUILayout.Label("Safe max [100-200]", GUILayout.Width(180));
             int selected = Array.IndexOf(AllowedMaxima, maximum.Value);
@@ -339,19 +339,16 @@ namespace CharacterEditorDeluxe
             return category == 0 ? game.points_gameplay : category == 1 ? game.points_grafik : category == 2 ? game.points_sound : game.points_technik;
         }
 
-        private static void AfterSaveGames() { LogStoredPriorities("save"); }
+        private static void AfterSaveGames() { ClampStoredPrioritiesOnPersistence(); }
 
-        private static void AfterLoadGames() { LogStoredPriorities("load"); }
+        private static void AfterLoadGames() { ClampStoredPrioritiesOnPersistence(); }
 
-        private static void LogStoredPriorities(string operation)
+        private static void ClampStoredPrioritiesOnPersistence()
         {
             if (active == null || active.player == null) return;
             foreach (gameScript game in UnityEngine.Object.FindObjectsOfType<gameScript>())
-            {
-                if (game == null || game.developerID != active.player.myID) continue;
-                if (active.enabled.Value) ClampStoredPriorities(game);
-                if (game.gameAP_Gameplay <= 20 && game.gameAP_Grafik <= 20 && game.gameAP_Sound <= 20 && game.gameAP_Technik <= 20) continue;
-            }
+                if (game != null && game.developerID == active.player.myID && active.enabled.Value)
+                    ClampStoredPriorities(game);
         }
 
         private static int ClampStoredPriority(gameScript game, int category)
