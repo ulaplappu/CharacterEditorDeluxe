@@ -1,0 +1,18 @@
+bin/
+obj/
+.vs/
+.vscode/
+*.user
+*.suo
+*.pdb
+
+# Local game and mod-loader files
+BepInEx/
+*_Data/
+*.sav
+*.log
+.analysis/
+
+# Keep the intentional release artifact
+!Release/
+!Release/CharacterEditorDeluxe.dll

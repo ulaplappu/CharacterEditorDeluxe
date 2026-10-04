@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>CharacterEditorDeluxe</AssemblyName>
+    <RootNamespace>CharacterEditorDeluxe</RootNamespace>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+  </PropertyGroup>
+
+  <Target Name="ValidateGameDirectory" BeforeTargets="ResolveReferences">
+    <Error Condition="'$(MGT2_DIR)' == ''"
+           Text="Set MGT2_DIR to your Mad Games Tycoon 2 installation directory before building." />
+    <Error Condition="!Exists('$(MGT2_DIR)/BepInEx/core/BepInEx.dll')"
+           Text="BepInEx 5 was not found below MGT2_DIR. Install BepInEx 5 into the game directory first." />
+    <Error Condition="!Exists('$(MGT2_DIR)/Mad Games Tycoon 2_Data/Managed/Assembly-CSharp.dll')"
+           Text="Assembly-CSharp.dll was not found below MGT2_DIR. Check the MGT2_DIR value." />
+  </Target>
+
+  <ItemGroup>
+    <Reference Include="BepInEx"><HintPath>$(MGT2_DIR)/BepInEx/core/BepInEx.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="0Harmony"><HintPath>$(MGT2_DIR)/BepInEx/core/0Harmony.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Assembly-CSharp"><HintPath>$(MGT2_DIR)/Mad Games Tycoon 2_Data/Managed/Assembly-CSharp.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Assembly-CSharp-firstpass"><HintPath>$(MGT2_DIR)/Mad Games Tycoon 2_Data/Managed/Assembly-CSharp-firstpass.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine"><HintPath>$(MGT2_DIR)/Mad Games Tycoon 2_Data/Managed/UnityEngine.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(MGT2_DIR)/Mad Games Tycoon 2_Data/Managed/UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.IMGUIModule"><HintPath>$(MGT2_DIR)/Mad Games Tycoon 2_Data/Managed/UnityEngine.IMGUIModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.InputLegacyModule"><HintPath>$(MGT2_DIR)/Mad Games Tycoon 2_Data/Managed/UnityEngine.InputLegacyModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.TextRenderingModule"><HintPath>$(MGT2_DIR)/Mad Games Tycoon 2_Data/Managed/UnityEngine.TextRenderingModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.UI"><HintPath>$(MGT2_DIR)/Mad Games Tycoon 2_Data/Managed/UnityEngine.UI.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>
