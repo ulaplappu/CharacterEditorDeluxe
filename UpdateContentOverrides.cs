@@ -15,13 +15,13 @@ namespace CharacterEditorDeluxe
     // quality and (1 + categoryPoints * 0.02) production points per selection.
     internal sealed class UpdateContentOverrides
     {
-        private static readonly int[] Maxima = { 100, 200, 400, 1000, 9999 };
-        private static readonly string[] Labels = { "100", "200", "400", "1000", "9999" };
+        private static readonly int[] Maxima = { 100 };
+        private static readonly string[] Labels = { "100" };
+        private const float SafeCategoryPointCap = 100f;
+        private const float SafeUpdateBonusCap = 5f;
         private static UpdateContentOverrides active;
         internal readonly ConfigEntry<bool> Enabled;
         internal readonly ConfigEntry<int> Maximum;
-        internal readonly ConfigEntry<bool> TraceSales;
-        internal static bool IsTracing => active != null && active.TraceSales.Value;
         internal readonly ConfigEntry<int>[] Percent = new ConfigEntry<int>[8];
         private readonly ManualLogSource log;
         private Harmony harmony;
@@ -35,11 +35,13 @@ namespace CharacterEditorDeluxe
         {
             this.log = log;
             Enabled = config.Bind("Game Update", "Enabled", false, "Scale real update content contributions. Disabled uses vanilla calculations.");
-            TraceSales = config.Bind("Game Update", "TraceSales", false, "Temporarily log player game sales ticks and update task state for diagnosis.");
-            Maximum = config.Bind("Game Update", "Maximum", 100, "Update % Max: 100, 200, 400, 1000, 9999.");
+            Maximum = config.Bind("Game Update", "Maximum", 100, "Safe update % maximum: 100.");
             if (Array.IndexOf(Maxima, Maximum.Value) < 0) Maximum.Value = 100;
             for (int i = 0; i < Percent.Length; i++)
-                Percent[i] = config.Bind("Game Update", "Content" + i, 2, "Actual percentage of category points added by this item. Vanilla is 2% (0-9999).");
+            {
+                Percent[i] = config.Bind("Game Update", "Content" + i, 2, "Actual percentage of category points added by this item. Safe range is 0-100%.");
+                Percent[i].Value = Mathf.Clamp(Percent[i].Value, 0, Maximum.Value);
+            }
         }
 
         internal void Install()
@@ -51,21 +53,28 @@ namespace CharacterEditorDeluxe
             harmony.Patch(AccessTools.Method(typeof(Menu_Dev_Update), "BUTTON_Start"), prefix: new HarmonyMethod(typeof(UpdateContentOverrides), nameof(BeforeStart)), postfix: new HarmonyMethod(typeof(UpdateContentOverrides), nameof(AfterStart)));
             harmony.Patch(AccessTools.Method(typeof(Menu_Dev_Update), "Init"), postfix: new HarmonyMethod(typeof(UpdateContentOverrides), nameof(MenuOpened)));
             harmony.Patch(AccessTools.Method(typeof(Menu_Dev_Update), "UpdateGUI"), postfix: new HarmonyMethod(typeof(UpdateContentOverrides), nameof(RefreshLabels)));
-            harmony.Patch(AccessTools.Method(typeof(taskUpdate), "Complete"), prefix: new HarmonyMethod(typeof(UpdateContentOverrides), nameof(BeforeComplete)), postfix: new HarmonyMethod(typeof(UpdateContentOverrides), nameof(AfterComplete)));
-            harmony.Patch(AccessTools.Method(typeof(taskUpdate), "Complete"), postfix: new HarmonyMethod(typeof(UpdateContentOverrides), nameof(AfterCompleteExact)));
+            harmony.Patch(AccessTools.Method(typeof(taskUpdate), "Complete"), prefix: new HarmonyMethod(typeof(UpdateContentOverrides), nameof(BeforeComplete)), postfix: new HarmonyMethod(typeof(UpdateContentOverrides), nameof(AfterCompleteAll)));
             harmony.Patch(AccessTools.Method(typeof(taskUpdate), "Abbrechen"), prefix: new HarmonyMethod(typeof(UpdateContentOverrides), nameof(BeforeCancel)));
             log.LogInfo("Update content patches installed: per-item production points, quality and workload. Costs remain vanilla.");
         }
 
         internal void Uninstall() { harmony?.UnpatchSelf(); if (active == this) active = null; }
 
+        internal void ResetToVanilla()
+        {
+            Enabled.Value = false;
+            Maximum.Value = 100;
+            for (int i = 0; i < Percent.Length; i++) Percent[i].Value = 2;
+        }
+
         internal void DrawOptions()
         {
             Enabled.Value = GUILayout.Toggle(Enabled.Value, "Game Update content percentages");
             GUILayout.BeginHorizontal();
-            GUILayout.Label("Update % Max", GUILayout.Width(140));
+            GUILayout.Label("Safe update max", GUILayout.Width(140));
             int index = GUILayout.SelectionGrid(Math.Max(0, Array.IndexOf(Maxima, Maximum.Value)), Labels, Labels.Length);
             Maximum.Value = Maxima[index];
+            for (int i = 0; i < Percent.Length; i++) Percent[i].Value = Mathf.Clamp(Percent[i].Value, 0, Maximum.Value);
             GUILayout.EndHorizontal();
             if (!Enabled.Value) return;
             if (menu == null || !menu.isActiveAndEnabled)
@@ -108,7 +117,6 @@ namespace CharacterEditorDeluxe
         {
             if (active == null) return;
             active.menu = __instance;
-            active.log.LogInfo("Update menu opened content%=" + string.Join("/", Array.ConvertAll(active.Percent, p => p.Value)));
         }
 
         private static float Weight(int item)
@@ -139,160 +147,9 @@ namespace CharacterEditorDeluxe
             internal double[] CategoryGains;
         }
 
-        private struct SalesSample
-        {
-            internal long Units;
-            internal long Revenue;
-            internal bool OnMarket;
-            internal bool Developing;
-            internal float Bonus;
-            internal long Cash;
-        }
-
-        private static bool ShouldTrace(gameScript game)
-        {
-            if (active == null || !active.TraceSales.Value || game == null) return false;
-            var main = UnityEngine.Object.FindObjectOfType<mainScript>();
-            return main != null && game.developerID == main.myID;
-        }
-
-        private static int ActiveUpdates(gameScript game)
-        {
-            if (game == null) return 0;
-            return UnityEngine.Object.FindObjectsOfType<taskUpdate>().Count(t => t.targetID == game.myID);
-        }
-
-        private static void BeforeSell(gameScript __instance, out SalesSample __state)
-        {
-            __state = default;
-            if (!ShouldTrace(__instance)) return;
-            var main = UnityEngine.Object.FindObjectOfType<mainScript>();
-            __state = new SalesSample
-            {
-                Units = __instance.sellsTotal,
-                Revenue = __instance.umsatzTotal,
-                OnMarket = __instance.isOnMarket,
-                Developing = __instance.inDevelopment,
-                Bonus = __instance.bonusSellsUpdates,
-                Cash = main.money
-            };
-            active.log.LogInfo("SALE before game=" + __instance.myID + " market=" + __state.OnMarket +
-                " developing=" + __state.Developing + " updates=" + ActiveUpdates(__instance) +
-                " bonus=" + __state.Bonus + " units=" + __state.Units + " revenue=" + __state.Revenue +
-                " cash=" + __state.Cash + " weekly=" + WeeklySales(__instance) +
-                " inputs=" + SalesInputs(__instance, main));
-        }
-
-        private static void AfterSell(gameScript __instance, SalesSample __state)
-        {
-            if (!ShouldTrace(__instance)) return;
-            var main = UnityEngine.Object.FindObjectOfType<mainScript>();
-            active.log.LogInfo("SALE after game=" + __instance.myID + " market=" + __instance.isOnMarket +
-                " developing=" + __instance.inDevelopment + " updates=" + ActiveUpdates(__instance) +
-                " bonus=" + __instance.bonusSellsUpdates + " unitsDelta=" + (__instance.sellsTotal - __state.Units) +
-                " revenueDelta=" + (__instance.umsatzTotal - __state.Revenue) +
-                " unitsStored=" + __instance.sellsTotal + " revenueStored=" + __instance.umsatzTotal +
-                " cashDelta=" + (main.money - __state.Cash) + " cashStored=" + main.money +
-                " weekly=" + WeeklySales(__instance) + " inputs=" + SalesInputs(__instance, main));
-        }
-
-        private static string SalesInputs(gameScript game, mainScript main)
-        {
-            int fans = -1;
-            if (game.genres_ != null && game.genres_.genres_FANS != null &&
-                game.maingenre >= 0 && game.maingenre < game.genres_.genres_FANS.Length)
-                fans = game.genres_.genres_FANS[game.maingenre];
-            string numeric = NumericState(game);
-            return "week=" + main.week + " age=" + game.weeksOnMarket +
-                " review=" + game.reviewTotal + "/" + game.reviewGameplay + "/" +
-                game.reviewGrafik + "/" + game.reviewSound + "/" + game.reviewSteuerung +
-                " ap=" + game.gameAP_Gameplay + "/" + game.gameAP_Grafik + "/" +
-                game.gameAP_Sound + "/" + game.gameAP_Technik +
-                " points=" + game.points_gameplay.ToString("R", CultureInfo.InvariantCulture) + "/" +
-                game.points_grafik.ToString("R", CultureInfo.InvariantCulture) + "/" +
-                game.points_sound.ToString("R", CultureInfo.InvariantCulture) + "/" +
-                game.points_technik.ToString("R", CultureInfo.InvariantCulture) +
-                " hype=" + game.hype.ToString("R", CultureInfo.InvariantCulture) +
-                " genreFans=" + fans + " prices=" + (game.verkaufspreis == null ? "null" :
-                    string.Join("/", game.verkaufspreis.Select(x => x.ToString()).ToArray())) +
-                " numeric=" + numeric;
-        }
-
-        private static string NumericState(gameScript game)
-        {
-            float[] values = { game.points_gameplay, game.points_grafik, game.points_sound,
-                game.points_technik, game.hype, game.bonusSellsUpdates };
-            string[] names = { "gameplay", "graphics", "sound", "technical", "hype", "updateBonus" };
-            var flags = new List<string>();
-            for (int i = 0; i < values.Length; i++)
-            {
-                float value = values[i];
-                if (float.IsNaN(value)) flags.Add(names[i] + ":NaN");
-                else if (float.IsInfinity(value)) flags.Add(names[i] + ":Infinity");
-                else if (value < 0f) flags.Add(names[i] + ":negative");
-                else if (value >= int.MaxValue) flags.Add(names[i] + ":Int32MaxOrAbove");
-            }
-            if (game.sellsPerWeek != null && game.sellsPerWeek.Any(x => x == int.MaxValue || x == int.MinValue))
-                flags.Add("weekly:Int32Boundary");
-            return flags.Count == 0 ? "ok" : string.Join(",", flags.ToArray());
-        }
-
-        private static string WeeklySales(gameScript game)
-        {
-            return game.sellsPerWeek == null ? "null" : string.Join("/", game.sellsPerWeek.Select(x => x.ToString()).ToArray());
-        }
-
-        private static void TraceBeforeComplete(taskUpdate __instance)
-        {
-            var game = (gameScript)AccessTools.Field(typeof(taskUpdate), "gS_").GetValue(__instance);
-            if (ShouldTrace(game))
-                active.log.LogInfo("UPDATE completing task=" + __instance.myID + " game=" + game.myID +
-                    " market=" + game.isOnMarket + " developing=" + game.inDevelopment +
-                    " quality=" + __instance.quality + " workload=" + __instance.points +
-                    " left=" + __instance.pointsLeft + " gains=" + __instance.pointsGameplay + "/" +
-                    __instance.pointsGrafik + "/" + __instance.pointsSound + "/" + __instance.pointsTechnik +
-                    " bonus=" + game.bonusSellsUpdates);
-        }
-
-        private static void TraceAfterComplete(taskUpdate __instance)
-        {
-            var game = (gameScript)AccessTools.Field(typeof(taskUpdate), "gS_").GetValue(__instance);
-            if (ShouldTrace(game))
-                active.log.LogInfo("UPDATE completed task=" + __instance.myID + " game=" + game.myID +
-                    " market=" + game.isOnMarket + " developing=" + game.inDevelopment +
-                    " updates=" + ActiveUpdates(game) + " bonus=" + game.bonusSellsUpdates +
-                    " points=" + game.points_gameplay + "/" + game.points_grafik + "/" +
-                    game.points_sound + "/" + game.points_technik);
-        }
-
-        private static void AfterWork(taskUpdate __instance)
-        {
-            var game = (gameScript)AccessTools.Field(typeof(taskUpdate), "gS_").GetValue(__instance);
-            if (ShouldTrace(game))
-                active.log.LogInfo("UPDATE work task=" + __instance.myID + " target=" + __instance.targetID +
-                    " pointsLeft=" + __instance.pointsLeft + " quality=" + __instance.quality);
-        }
-
-        private static void TraceWorkCaller(characterScript __instance, roomScript __0)
-        {
-            if (active == null || !active.TraceSales.Value || __0 == null) return;
-            var task = __0.GetTaskUpdate();
-            if (task == null) return;
-            var game = (gameScript)AccessTools.Field(typeof(taskUpdate), "gS_").GetValue(task);
-            if (!ShouldTrace(game)) return;
-            active.log.LogInfo("UPDATE caller task=" + task.myID + " game=" + game.myID +
-                " character=" + __instance.myID + " name=" + __instance.myName +
-                " characterRoom=" + __instance.roomID + " assignedRoom=" + (__instance.roomS_ == null ? -1 : __instance.roomS_.myID) +
-                " targetRoom=" + __0.myID + " roomTask=" + __0.taskID +
-                " usingObject=" + __instance.objectUsingID + " roomPaused=" + __0.pause);
-        }
-
         private static void BeforeCancel(taskUpdate __instance)
         {
             if (active != null && __instance != null) active.pendingTaskGains.Remove(__instance.GetInstanceID());
-            var game = (gameScript)AccessTools.Field(typeof(taskUpdate), "gS_").GetValue(__instance);
-            if (ShouldTrace(game))
-                active.log.LogInfo("UPDATE cancel task=" + __instance.myID + " target=" + __instance.targetID);
         }
 
         private static void BeforeComplete(taskUpdate __instance, out BonusSample __state)
@@ -303,32 +160,17 @@ namespace CharacterEditorDeluxe
             var game = (gameScript)AccessTools.Field(typeof(taskUpdate), "gS_").GetValue(__instance);
             var player = UnityEngine.Object.FindObjectOfType<mainScript>();
             if (game == null || player == null || game.developerID != player.myID) return;
-            __state = new BonusSample { Game = game, Before = game.bonusSellsUpdates, Quality = __instance.quality, Count = game.amountUpdates };
+            __state = new BonusSample { Game = game, Before = game.bonusSellsUpdates, Quality = __instance.quality, Count = Math.Max(0, game.amountUpdates) };
         }
 
-        private static void AfterComplete(BonusSample __state)
+        private static void AfterCompleteAll(taskUpdate __instance, BonusSample __state)
         {
-            if (__state.Game == null) return;
-            double value = __state.Before + (double)__state.Quality / (__state.Count + 1);
-            if (!double.IsNaN(value) && value >= 0 && value <= float.MaxValue)
-                __state.Game.bonusSellsUpdates = (float)value;
-        }
-
-        private static float AddExactGain(float current, double exactGain, int vanillaGain, string field, int taskId)
-        {
-            if (double.IsNaN(exactGain) || double.IsInfinity(exactGain) || float.IsNaN(current) || float.IsInfinity(current)) return current;
-            double corrected = (double)current + exactGain - vanillaGain;
-            if (corrected <= 0d) return 0f;
-            if (corrected >= float.MaxValue)
+            if (__state.Game != null)
             {
-                active.log.LogWarning("Clamped final game field " + field + " for task=" + taskId + " value=" + corrected.ToString("R", CultureInfo.InvariantCulture));
-                return float.MaxValue;
+                double value = __state.Before + (double)__state.Quality / ((double)__state.Count + 1d);
+                if (!double.IsNaN(value) && !double.IsInfinity(value) && value >= 0)
+                    __state.Game.bonusSellsUpdates = Mathf.Clamp((float)Math.Min(value, SafeUpdateBonusCap), 0f, SafeUpdateBonusCap);
             }
-            return (float)corrected;
-        }
-
-        private static void AfterCompleteExact(taskUpdate __instance)
-        {
             if (active == null || __instance == null) return;
             double[] gains;
             if (!active.pendingTaskGains.TryGetValue(__instance.GetInstanceID(), out gains)) return;
@@ -339,6 +181,29 @@ namespace CharacterEditorDeluxe
             game.points_grafik = AddExactGain(game.points_grafik, gains[1], __instance.pointsGrafik, "graphics", __instance.myID);
             game.points_sound = AddExactGain(game.points_sound, gains[2], __instance.pointsSound, "sound", __instance.myID);
             game.points_technik = AddExactGain(game.points_technik, gains[3], __instance.pointsTechnik, "technical", __instance.myID);
+            game.bonusSellsUpdates = Mathf.Clamp(game.bonusSellsUpdates, 0f, SafeUpdateBonusCap);
+        }
+
+        private static float AddExactGain(float current, double exactGain, int vanillaGain, string field, int taskId)
+        {
+            if (double.IsNaN(exactGain) || double.IsInfinity(exactGain))
+            {
+                active.log.LogWarning("Ignored non-finite exact gain for " + field + " task=" + taskId + ".");
+                return ClampSafe(current, field, taskId);
+            }
+            if (float.IsNaN(current) || float.IsInfinity(current))
+            {
+                active.log.LogWarning("Reset non-finite current value for " + field + " task=" + taskId + ".");
+                current = 0f;
+            }
+            double corrected = (double)current + exactGain - vanillaGain;
+            if (corrected <= 0d) return 0f;
+            if (corrected >= SafeCategoryPointCap)
+            {
+                active.log.LogWarning("Clamped final game field " + field + " for task=" + taskId + " to safe cap " + SafeCategoryPointCap.ToString("R", CultureInfo.InvariantCulture));
+                return SafeCategoryPointCap;
+            }
+            return (float)corrected;
         }
 
         private static void BeforeStart(Menu_Dev_Update __instance, out StartSample __state)
@@ -347,14 +212,29 @@ namespace CharacterEditorDeluxe
             if (active == null || !active.Enabled.Value) return;
             var game = (gameScript)AccessTools.Field(typeof(Menu_Dev_Update), "gS_").GetValue(__instance);
             if (game == null) return;
+            game.points_gameplay = ClampSafe(game.points_gameplay, "gameplay", game.myID);
+            game.points_grafik = ClampSafe(game.points_grafik, "graphics", game.myID);
+            game.points_sound = ClampSafe(game.points_sound, "sound", game.myID);
+            game.points_technik = ClampSafe(game.points_technik, "technical", game.myID);
+            game.bonusSellsUpdates = ClampSafe(game.bonusSellsUpdates, "update bonus", game.myID, SafeUpdateBonusCap);
             __state.ExistingTasks = new HashSet<int>(UnityEngine.Object.FindObjectsOfType<taskUpdate>().Select(t => t.GetInstanceID()));
             double qualityDelta = 0, workloadDelta = 0;
             double devPoints = game.GetGesamtDevPoints();
+            if (double.IsNaN(devPoints) || double.IsInfinity(devPoints) || devPoints < 0d)
+            {
+                active.log.LogWarning("Reset unsafe development points for game=" + game.myID + " before update start.");
+                devPoints = 0d;
+            }
             for (int i = 0; i < 8; i++)
             {
                 if (!Selections(__instance)[i]) continue;
                 qualityDelta += 0.1d * (Weight(i) - 1d);
                 workloadDelta += Math.Round(devPoints * 0.02d * Weight(i), MidpointRounding.ToEven) - Math.Round(devPoints * 0.02d, MidpointRounding.ToEven);
+            }
+            if (double.IsNaN(workloadDelta) || double.IsInfinity(workloadDelta))
+            {
+                active.log.LogWarning("Reset unsafe update workload adjustment for game=" + game.myID + ".");
+                workloadDelta = 0d;
             }
             __state.QualityDelta = qualityDelta;
             __state.WorkloadDelta = workloadDelta;
@@ -368,6 +248,16 @@ namespace CharacterEditorDeluxe
             }
         }
 
+        private static float ClampSafe(float value, string field, int gameId, float limit = SafeCategoryPointCap)
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value) || value < 0f || value > limit)
+            {
+                active.log.LogWarning("Clamped unsafe " + field + " for game=" + gameId + " to " + limit.ToString("R", CultureInfo.InvariantCulture));
+                return Mathf.Clamp(float.IsNaN(value) || float.IsInfinity(value) ? 0f : value, 0f, limit);
+            }
+            return value;
+        }
+
         private static void AfterStart(StartSample __state)
         {
             if (active == null || __state.ExistingTasks == null) return;
@@ -375,15 +265,12 @@ namespace CharacterEditorDeluxe
             if (task == null) { active.log.LogWarning("No new update task found after BUTTON_Start."); return; }
             double quality = task.quality + __state.QualityDelta;
             double points = task.points + __state.WorkloadDelta;
-            if (quality < 0 || quality > float.MaxValue || points < 0 || points > float.MaxValue)
+            if (double.IsNaN(quality) || double.IsInfinity(quality) || double.IsNaN(points) || double.IsInfinity(points) ||
+                quality < 0 || quality > float.MaxValue || points < 0 || points > float.MaxValue)
             { active.log.LogWarning("Skipped unsafe update task scaling: " + task.myID); return; }
             task.quality = (float)quality;
             task.points = task.pointsLeft = (float)points;
             if (__state.CategoryGains != null) active.pendingTaskGains[task.GetInstanceID()] = __state.CategoryGains;
-            active.log.LogInfo("UPDATE started task=" + task.myID + " game=" + task.targetID +
-                " quality=" + task.quality + " workload=" + task.points +
-                " gains=" + task.pointsGameplay + "/" + task.pointsGrafik + "/" +
-                task.pointsSound + "/" + task.pointsTechnik);
         }
 
         private static bool CalculatePoints(Menu_Dev_Update __instance, MethodBase __originalMethod, ref int __result)
@@ -393,11 +280,12 @@ namespace CharacterEditorDeluxe
             if (game == null) return true;
             int category = __originalMethod.Name == "GetP_Gameplay" ? 0 : __originalMethod.Name == "GetP_Grafik" ? 1 : __originalMethod.Name == "GetP_Sound" ? 2 : 3;
             double points = category == 0 ? game.points_gameplay : category == 1 ? game.points_grafik : category == 2 ? game.points_sound : game.points_technik;
+            points = double.IsNaN(points) || double.IsInfinity(points) ? 0d : Math.Max(0d, Math.Min(points, SafeCategoryPointCap));
             double total = 0d;
             for (int i = category * 2; i < category * 2 + 2; i++)
                 if (Selections(__instance)[i] && Weight(i) > 0) total += 1d + points * 0.02d * Weight(i);
             double rounded = Math.Round(total, MidpointRounding.ToEven);
-            __result = rounded >= int.MaxValue ? int.MaxValue : rounded <= 0d ? 0 : (int)rounded;
+            __result = double.IsNaN(rounded) || rounded <= 0d ? 0 : rounded >= int.MaxValue ? int.MaxValue : (int)rounded;
             return false;
         }
 

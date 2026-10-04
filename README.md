@@ -1,17 +1,20 @@
 # Character Editor Deluxe for Mad Games Tycoon 2
 
+Version 1.0.0
+
 Character Editor Deluxe is a BepInEx 5 plugin for editing player employees and enabling optional player-only development cheats in Mad Games Tycoon 2.
 
 ## Features
 
-- Edit nine employee attributes up to 9999.
+- Edit nine employee attributes on MGT2's safe 0-100 scale.
 - Lock edited skills against vanilla learning caps and resets.
 - Lock motivation independently for each employee.
-- Enable, disable, or clear employee perks.
+- Enable, disable, or clear officially resolved employee perks.
+- Apply all positive perks without auto-enabling negative or unresolved perks.
 - Apply edits to one employee or all current player employees.
 - Optionally maximize newly hired employees after initialization.
 - Raise Design Priority limits and allow totals above 100%.
-- Set real Game Update content percentages with maximums of 100, 200, 400, 1000, or 9999%.
+- Set real Game Update content percentages up to the conservative 100% safety maximum.
 - Preserve edited values and lock metadata through normal save and load.
 
 Game Update percentages affect update category points, quality, and workload. Update prices and player cash remain on the vanilla calculation.
@@ -45,7 +48,8 @@ Press **F8** to open or close Character Editor Deluxe.
 - **Auto-max new employees** applies configured maximums to new hires.
 - **Uncapped Design Priority** controls the priority maximum and total-limit override.
 - **Game Update content percentages** enables real per-item update percentages while the Game Update menu is open.
-- **Update % Max** selects 100, 200, 400, 1000, or 9999.
+- **Update % Max** is fixed at the conservative 100% safety maximum.
+- Perks are grouped as positive, negative, and unknown; negative and unknown entries are hidden unless explicitly shown.
 - Vanilla Game Update content is 2% per selected item.
 
 Disabling an optional cheat restores vanilla calculations for future actions. Existing values already stored in a save remain part of that save.

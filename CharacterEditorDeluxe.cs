@@ -9,7 +9,7 @@ using UnityEngine;
 
 namespace CharacterEditorDeluxe
 {
-    [BepInPlugin("com.codex.mgt2.charactereditordeluxe", "MGT2 Character Editor Deluxe", "1.6.1")]
+    [BepInPlugin("com.codex.mgt2.charactereditordeluxe", "MGT2 Character Editor Deluxe", "1.0.0")]
     public sealed class Plugin : BaseUnityPlugin
     {
         private static readonly string[] StatFields = {
@@ -21,6 +21,8 @@ namespace CharacterEditorDeluxe
             "PR", "Game Testing", "Technology", "Research"
         };
         private static readonly BindingFlags InstanceFlags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        private static readonly FieldInfo[] StatMembers = Array.ConvertAll(StatFields, name => typeof(characterScript).GetField(name, InstanceFlags));
+        private static readonly string[] Tabs = { "EMPLOYEES", "GAME DESIGN", "GAME UPDATES", "GLOBAL" };
 
         private ConfigEntry<bool> autoMaxNewEmployees;
         private ConfigEntry<int> configuredCap;
@@ -32,7 +34,9 @@ namespace CharacterEditorDeluxe
         private mainScript trackedGame;
         private readonly HashSet<characterScript> trackedCharacters = new HashSet<characterScript>();
         private readonly Dictionary<characterScript, float> pendingNewCharacters = new Dictionary<characterScript, float>();
+        private readonly List<characterScript> employeeCache = new List<characterScript>();
         private bool visible;
+        private int activeTab;
         private Vector2 scroll;
         private int selectedIndex;
         private characterScript selected;
@@ -57,14 +61,21 @@ namespace CharacterEditorDeluxe
         private GameObject[] perkCatalogSource;
         private textScript perkTextSource;
         private GUIStyle perkTooltipStyle;
+        private bool showNegativePerks;
+        private bool showUnknownPerks;
         private StatOverrides overrides;
         private DesignPriorityOverrides designPriorities;
         private UpdateContentOverrides updateContent;
 
+        private enum PerkKind { Positive, Negative, Neutral, Unknown }
+
         private sealed class PerkInfo
         {
+            public int Index;
             public string Name;
             public string Description;
+            public PerkKind Kind;
+            public GUIContent Content;
         }
 
         private const float MinimumWindowWidth = 560f;
@@ -77,13 +88,13 @@ namespace CharacterEditorDeluxe
         private void Awake()
         {
             autoMaxNewEmployees = Config.Bind("General", "AutoMaxNewEmployees", false, "Automatically max newly added employees after initialization.");
-            configuredCap = Config.Bind("Stats", "StatCap", 100, "Maximum stat value (1 to 9999). Default game scale is 0 to 100.");
+            configuredCap = Config.Bind("Stats", "StatCap", 100, "Safe maximum stat value (0 to 100). MGT2's native scale is 0 to 100.");
             var globalLock = Config.Bind("Locks", "LockEditedStats", true, "Keep edited skills at their assigned values during work, training and save/load.");
             savedWindowX = Config.Bind("Window", "X", 30f, "Saved editor window X position.");
             savedWindowY = Config.Bind("Window", "Y", 30f, "Saved editor window Y position.");
             savedWindowWidth = Config.Bind("Window", "Width", DefaultWindowWidth, "Saved editor window width.");
             savedWindowHeight = Config.Bind("Window", "Height", DefaultWindowHeight, "Saved editor window height.");
-            cap = Mathf.Clamp(configuredCap.Value, 1, 9999);
+            cap = Mathf.Clamp(configuredCap.Value, 1, 100);
             configuredCap.Value = cap;
             windowRect = new Rect(savedWindowX.Value, savedWindowY.Value, savedWindowWidth.Value, savedWindowHeight.Value);
             ClampWindowToScreen();
@@ -91,7 +102,7 @@ namespace CharacterEditorDeluxe
             overrides.Install();
             designPriorities = new DesignPriorityOverrides(Logger,
                 Config.Bind("Design Priority", "UncappedDesignPriority", false, "Allow player game design priorities above 100%."),
-                Config.Bind("Design Priority", "PriorityMax", 100, "Maximum priority per slider: 100, 200, 500, 1000, 9999, or 100000 percent."),
+                Config.Bind("Design Priority", "PriorityMax", 100, "Safe maximum priority per slider: 100 or 200 percent."),
                 Config.Bind("Design Priority", "AllowTotalAbove100", true, "Allow a total above 100% while the priority cheat is enabled."));
             designPriorities.Install();
             updateContent = new UpdateContentOverrides(Config, Logger);
@@ -115,6 +126,7 @@ namespace CharacterEditorDeluxe
             {
                 nextLookup = Time.unscaledTime + 1f;
                 if (game == null) game = UnityEngine.Object.FindObjectOfType<mainScript>();
+                RefreshEmployeeCache();
                 TrackNewEmployees();
                 RefreshPerkCatalog();
                 designPriorities.UpdateMenu();
@@ -145,102 +157,197 @@ namespace CharacterEditorDeluxe
 
         private void DrawWindow(int id)
         {
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Button("Close", GUILayout.Width(70))) SetVisible(false);
-            GUILayout.Label("Toggle: F8 | Default stat range: 0-100 | Current cap: " + cap);
+            GUILayout.BeginHorizontal("box");
+            GUILayout.Label("CHARACTER EDITOR DELUXE", GUILayout.ExpandWidth(true));
+            GUILayout.Label("F8", GUILayout.Width(28));
+            if (GUILayout.Button("Close", GUILayout.Width(60))) SetVisible(false);
             GUILayout.EndHorizontal();
-            cap = Mathf.Clamp(cap, 1, 9999);
-            if (configuredCap.Value != cap) configuredCap.Value = cap;
-            autoMaxNewEmployees.Value = GUILayout.Toggle(autoMaxNewEmployees.Value, "Auto-max newly hired employees (stats to configured cap, all perks)");
+            GUILayout.Label("Safe limits are enforced before values reach MGT2. Current stat cap: " + cap + "/100.");
+            activeTab = GUILayout.SelectionGrid(activeTab, Tabs, 4, GUILayout.Height(28));
+            scroll = GUILayout.BeginScrollView(scroll, GUILayout.ExpandHeight(true));
+            if (activeTab == 0) DrawEmployeesTab();
+            else if (activeTab == 1) DrawGameDesignTab();
+            else if (activeTab == 2) DrawGameUpdatesTab();
+            else DrawGlobalTab();
+            GUILayout.EndScrollView();
+            if (!string.IsNullOrEmpty(status)) GUILayout.Label(status, "box");
+            HandleResize();
+            GUI.DragWindow(new Rect(0, 0, windowRect.width, TitleBarHeight));
+        }
+
+        private void DrawEmployeesTab()
+        {
+            var employees = GetEmployees();
+            GUILayout.BeginVertical("box");
+            GUILayout.Label("EMPLOYEE", GUI.skin.GetStyle("boldlabel"));
+            if (employees.Count == 0) { GUILayout.Label("Load or start a game to edit employees."); GUILayout.EndVertical(); return; }
+            if (selectedIndex >= employees.Count) selectedIndex = 0;
+            if (selected != employees[selectedIndex]) LoadSelection(employees[selectedIndex]);
+            RefreshCurrentStats();
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("<", GUILayout.Width(32))) ChangeSelection(-1, employees);
+            GUILayout.Label(GetCharacterLabel(employees[selectedIndex], selectedIndex) + "  (" + (selectedIndex + 1) + "/" + employees.Count + ")", GUILayout.ExpandWidth(true));
+            if (GUILayout.Button(">", GUILayout.Width(32))) ChangeSelection(1, employees);
+            GUILayout.EndHorizontal();
+            GUILayout.EndVertical();
+            GUILayout.BeginVertical("box");
+            GUILayout.Label("STATS  (safe range 0-" + cap + ")", GUI.skin.GetStyle("boldlabel"));
+            for (int i = 0; i < StatFields.Length; i++)
+            {
+                GUILayout.BeginHorizontal();
+                GUILayout.Label(StatLabels[i], GUILayout.Width(120));
+                float sliderValue = Mathf.Clamp(stagedStats[i], 0f, cap);
+                float val = GUILayout.HorizontalSlider(sliderValue, 0f, cap, GUILayout.ExpandWidth(true));
+                if (Math.Abs(val - sliderValue) > 0.01f) SetStagedStat(i, Mathf.Round(val));
+                string typed = GUILayout.TextField(statInputs[i], GUILayout.Width(62));
+                if (typed != statInputs[i]) SetTypedStat(i, typed);
+                GUILayout.Label("/" + cap, GUILayout.Width(35));
+                GUILayout.EndHorizontal();
+            }
+            GUILayout.EndVertical();
+            GUILayout.BeginVertical("box");
+            DrawPerks();
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Apply all positive perks")) ApplyAllPositivePerks();
+            if (GUILayout.Button("Clear all")) for (int i = 0; i < stagedPerks.Length; i++) stagedPerks[i] = false;
+            GUILayout.EndHorizontal();
+            GUILayout.EndVertical();
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Apply selected", GUILayout.Height(30))) Apply(employees, false);
+            if (GUILayout.Button("Apply all employees", GUILayout.Height(30))) Apply(employees, true);
+            GUILayout.EndHorizontal();
+        }
+
+        private void DrawGameDesignTab()
+        {
+            GUILayout.BeginVertical("box");
+            GUILayout.Label("GAME DESIGN", GUI.skin.GetStyle("boldlabel"));
+            GUILayout.Label("Design Priority is limited to the verified stable maximum. Higher values can overflow update and sales formulas.");
             designPriorities.DrawOptions();
+            GUILayout.EndVertical();
+        }
+
+        private void DrawPerks()
+        {
+            int positiveSelected = 0, positiveTotal = 0, negativeSelected = 0, negativeTotal = 0;
+            foreach (PerkInfo perk in perkCatalog)
+            {
+                if (perk == null || perk.Kind != PerkKind.Negative) continue;
+                negativeTotal++;
+                if (perk.Index >= 0 && perk.Index < stagedPerks.Length && stagedPerks[perk.Index]) negativeSelected++;
+            }
+            GUILayout.Label("POSITIVE PERKS", GUI.skin.GetStyle("boldlabel"));
+            foreach (PerkInfo perk in perkCatalog)
+            {
+                if (perk == null || perk.Kind != PerkKind.Positive) continue;
+                positiveTotal++;
+                DrawPerkToggle(perk, ref positiveSelected);
+            }
+            GUILayout.Label("Positive selected " + positiveSelected + "/" + positiveTotal);
+
+            showNegativePerks = GUILayout.Toggle(showNegativePerks, "Show Negative Perks (manual only)");
+            if (showNegativePerks)
+            {
+                GUILayout.Label("NEGATIVE PERKS", GUI.skin.GetStyle("boldlabel"));
+                int displayedNegativeSelected = 0;
+                foreach (PerkInfo perk in perkCatalog)
+                {
+                    if (perk == null || perk.Kind != PerkKind.Negative) continue;
+                    DrawPerkToggle(perk, ref displayedNegativeSelected);
+                }
+            }
+            GUILayout.Label("Negative selected " + negativeSelected + "/" + negativeTotal);
+
+            showUnknownPerks = GUILayout.Toggle(showUnknownPerks, "Show Neutral/Unknown Perks");
+            if (showUnknownPerks)
+            {
+                GUILayout.Label("NEUTRAL / SITUATIONAL", GUI.skin.GetStyle("boldlabel"));
+                foreach (PerkInfo perk in perkCatalog)
+                    if (perk != null && perk.Kind == PerkKind.Neutral) DrawUnknownPerkToggle(perk);
+                GUILayout.Label("UNKNOWN / UNRESOLVED", GUI.skin.GetStyle("boldlabel"));
+                foreach (PerkInfo perk in perkCatalog)
+                    if (perk != null && perk.Kind == PerkKind.Unknown) DrawUnknownPerkToggle(perk);
+            }
+            if (positiveTotal == 0 && negativeTotal == 0 && !showUnknownPerks)
+                GUILayout.Label("Open a game to resolve the official perk catalog.");
+        }
+
+        private void DrawPerkToggle(PerkInfo perk, ref int selectedCount)
+        {
+            bool selectedValue = stagedPerks != null && perk.Index >= 0 && perk.Index < stagedPerks.Length && stagedPerks[perk.Index];
+            bool value = GUILayout.Toggle(selectedValue, perk.Content);
+            if (value != selectedValue && perk.Index >= 0 && perk.Index < stagedPerks.Length) stagedPerks[perk.Index] = value;
+            if (value) selectedCount++;
+        }
+
+        private void DrawUnknownPerkToggle(PerkInfo perk)
+        {
+            bool selectedValue = stagedPerks != null && perk.Index >= 0 && perk.Index < stagedPerks.Length && stagedPerks[perk.Index];
+            bool value = GUILayout.Toggle(selectedValue, perk.Content);
+            if (value != selectedValue && perk.Index >= 0 && perk.Index < stagedPerks.Length) stagedPerks[perk.Index] = value;
+        }
+
+        private void ApplyAllPositivePerks()
+        {
+            if (stagedPerks == null) return;
+            for (int i = 0; i < stagedPerks.Length; i++) stagedPerks[i] = false;
+            foreach (PerkInfo perk in perkCatalog)
+                if (perk != null && perk.Kind == PerkKind.Positive && perk.Index >= 0 && perk.Index < stagedPerks.Length)
+                    stagedPerks[perk.Index] = true;
+            status = "Staged all positively classified official perks; negative and unresolved perks remain disabled.";
+        }
+
+        private void DrawGameUpdatesTab()
+        {
+            GUILayout.BeginVertical("box");
+            GUILayout.Label("GAME UPDATES", GUI.skin.GetStyle("boldlabel"));
+            GUILayout.Label("Update content is limited to the verified stable range. Vanilla calculations remain active when disabled.");
             updateContent.DrawOptions();
-            bool globalLock = GUILayout.Toggle(overrides.GlobalLock.Value, "Lock Edited Stats (global)");
+            GUILayout.EndVertical();
+        }
+
+        private void DrawGlobalTab()
+        {
+            GUILayout.BeginVertical("box");
+            GUILayout.Label("GLOBAL", GUI.skin.GetStyle("boldlabel"));
+            autoMaxNewEmployees.Value = GUILayout.Toggle(autoMaxNewEmployees.Value, "Auto-max new hires to the safe stat cap");
+            bool globalLock = GUILayout.Toggle(overrides.GlobalLock.Value, "Lock edited stats globally");
             if (globalLock != overrides.GlobalLock.Value)
             {
                 overrides.GlobalLock.Value = globalLock;
                 if (globalLock) overrides.RestoreAllLocked();
             }
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("Custom stat cap", GUILayout.Width(110));
-            string capText = GUILayout.TextField(cap.ToString(CultureInfo.InvariantCulture), GUILayout.Width(70));
+            GUILayout.Label("Stat cap", GUILayout.Width(70));
+            string capText = GUILayout.TextField(cap.ToString(CultureInfo.InvariantCulture), GUILayout.Width(62));
             int parsed;
-            if (int.TryParse(capText, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed)) cap = Mathf.Clamp(parsed, 1, 9999);
-            if (GUILayout.Button("Use configured cap", GUILayout.Width(140))) cap = Mathf.Clamp(configuredCap.Value, 1, 9999);
-            GUILayout.EndHorizontal();
-            RefreshPerkCatalog();
-            var employees = GetEmployees();
-            if (employees.Count == 0)
+            if (int.TryParse(capText, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed)) cap = Mathf.Clamp(parsed, 1, 100);
+            configuredCap.Value = cap;
+            if (GUILayout.Button("Reset cheats to vanilla")) ResetToVanilla();
+            GUILayout.Label("Version 1.0.0 | F8 toggles this window | window position and size are saved.");
+            GUILayout.EndVertical();
+        }
+
+        private void SetTypedStat(int index, string typed)
+        {
+            statInputs[index] = typed;
+            float n;
+            if (float.TryParse(typed, NumberStyles.Float, CultureInfo.InvariantCulture, out n) && !float.IsNaN(n) && !float.IsInfinity(n))
             {
-                GUILayout.Label("No active employee data found. Load or start a game, then reopen this editor.");
-                HandleResize();
-                GUI.DragWindow(new Rect(0, 0, windowRect.width, TitleBarHeight));
-                return;
+                stagedStats[index] = Mathf.Clamp(n, 0f, cap);
+                statDirty[index] = true;
             }
-            if (selectedIndex >= employees.Count) selectedIndex = 0;
-            if (selected != employees[selectedIndex]) LoadSelection(employees[selectedIndex]);
-            RefreshCurrentStats();
+            else status = "Enter a finite number between 0 and " + cap + ".";
+        }
 
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Button("<", GUILayout.Width(35))) ChangeSelection(-1, employees);
-            GUILayout.Label(GetCharacterLabel(employees[selectedIndex], selectedIndex) + "  (" + (selectedIndex + 1) + "/" + employees.Count + ")", GUILayout.Width(350));
-            if (GUILayout.Button(">", GUILayout.Width(35))) ChangeSelection(1, employees);
-            GUILayout.Label("Perks are independent flags; there is no point pool in the game data.");
-            GUILayout.EndHorizontal();
-
-            GUILayout.BeginHorizontal();
-            bool statsLock = GUILayout.Toggle(overrides.IsStatsLocked(selected), "Lock Stats", GUILayout.Width(130));
-            if (statsLock != overrides.IsStatsLocked(selected)) overrides.SetStatsLock(selected, statsLock);
-            bool motivationLock = GUILayout.Toggle(overrides.IsMotivationLocked(selected), "Lock Motivation", GUILayout.Width(160));
-            if (motivationLock != overrides.IsMotivationLocked(selected)) overrides.SetMotivationLock(selected, motivationLock);
-            GUILayout.EndHorizontal();
-
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Button("Max All Stats")) for (int i = 0; i < stagedStats.Length; i++) SetStagedStat(i, cap);
-            if (GUILayout.Button("Unlock All Perks")) for (int i = 0; i < stagedPerks.Length; i++) stagedPerks[i] = true;
-            if (GUILayout.Button("Clear All Perks")) for (int i = 0; i < stagedPerks.Length; i++) stagedPerks[i] = false;
-            GUILayout.EndHorizontal();
-
-            scroll = GUILayout.BeginScrollView(scroll, GUILayout.ExpandHeight(true));
-            GUILayout.Label("Character stats");
-            for (int i = 0; i < StatFields.Length; i++)
-            {
-                GUILayout.BeginHorizontal();
-                GUILayout.Label(StatLabels[i] + " (" + ReadStat(selected, i).ToString("0.##", CultureInfo.InvariantCulture) + ")", GUILayout.Width(165));
-                float sliderValue = Mathf.Clamp(stagedStats[i], 0f, cap);
-                float val = GUILayout.HorizontalSlider(sliderValue, 0f, cap, GUILayout.Width(330));
-                if (Math.Abs(val - sliderValue) > 0.01f) SetStagedStat(i, Mathf.Round(val));
-                string typed = GUILayout.TextField(statInputs[i], GUILayout.Width(80));
-                if (typed != statInputs[i])
-                {
-                    statInputs[i] = typed;
-                    float n;
-                    if (float.TryParse(typed, NumberStyles.Float, CultureInfo.InvariantCulture, out n) && !float.IsNaN(n) && !float.IsInfinity(n))
-                    {
-                        stagedStats[i] = Mathf.Clamp(n, 0f, cap);
-                        statDirty[i] = true;
-                    }
-                }
-                GUILayout.EndHorizontal();
-            }
-
-            GUILayout.Space(8);
-            GUILayout.Label("In-game perks");
-            for (int i = 0; i < stagedPerks.Length; i++)
-            {
-                PerkInfo perk = GetPerkInfo(i);
-                string label = i.ToString(CultureInfo.InvariantCulture) + ". " + perk.Name;
-                bool value = GUILayout.Toggle(stagedPerks[i], new GUIContent(label, "CEDPERK:" + i.ToString(CultureInfo.InvariantCulture)));
-                if (value != stagedPerks[i]) stagedPerks[i] = value;
-            }
-            GUILayout.EndScrollView();
-
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Button("Apply to Selected", GUILayout.Height(32))) Apply(employees, false);
-            if (GUILayout.Button("Apply to All Employees", GUILayout.Height(32))) Apply(employees, true);
-            GUILayout.EndHorizontal();
-            GUILayout.Label(status);
-            HandleResize();
-            GUI.DragWindow(new Rect(0, 0, windowRect.width, TitleBarHeight));
+        private void ResetToVanilla()
+        {
+            autoMaxNewEmployees.Value = false;
+            overrides.GlobalLock.Value = false;
+            designPriorities.ResetToVanilla();
+            updateContent.ResetToVanilla();
+            cap = 100;
+            configuredCap.Value = cap;
+            status = "Cheats disabled; vanilla calculations restored for future actions.";
         }
 
         private void SetVisible(bool show)
@@ -369,15 +476,19 @@ namespace CharacterEditorDeluxe
 
         private List<characterScript> GetEmployees()
         {
-            var result = new List<characterScript>();
-            if (game == null) return result;
+            return employeeCache;
+        }
+
+        private void RefreshEmployeeCache()
+        {
+            employeeCache.Clear();
+            if (game == null) return;
             try
             {
                 var array = game.arrayCharactersScripts;
-                if (array != null) foreach (var character in array) if (character != null) result.Add(character);
+                if (array != null) foreach (var character in array) if (character != null) employeeCache.Add(character);
             }
             catch (Exception ex) { Logger.LogWarning("Could not read employee list: " + ex.Message); }
-            return result;
         }
 
         private void ChangeSelection(int delta, List<characterScript> employees)
@@ -393,8 +504,7 @@ namespace CharacterEditorDeluxe
             for (int i = 0; i < StatFields.Length; i++)
             {
                 float value = ReadStat(selected, i);
-                if (float.IsNaN(value) || float.IsInfinity(value)) value = 0f;
-                stagedStats[i] = value;
+                stagedStats[i] = ClampStatValue(value);
                 statInputs[i] = stagedStats[i].ToString("0.##", CultureInfo.InvariantCulture);
                 statDirty[i] = false;
             }
@@ -422,7 +532,7 @@ namespace CharacterEditorDeluxe
 
         private static float ReadStat(characterScript character, int index)
         {
-            return Convert.ToSingle(typeof(characterScript).GetField(StatFields[index], InstanceFlags).GetValue(character), CultureInfo.InvariantCulture);
+            return Convert.ToSingle(StatMembers[index].GetValue(character), CultureInfo.InvariantCulture);
         }
 
         private void RefreshCurrentStats()
@@ -433,8 +543,8 @@ namespace CharacterEditorDeluxe
                 if (statDirty[i]) continue;
                 float value = ReadStat(selected, i);
                 if (float.IsNaN(value) || float.IsInfinity(value)) continue;
-                stagedStats[i] = value;
-                statInputs[i] = value.ToString("0.##", CultureInfo.InvariantCulture);
+                stagedStats[i] = ClampStatValue(value, false);
+                statInputs[i] = stagedStats[i].ToString("0.##", CultureInfo.InvariantCulture);
             }
         }
 
@@ -450,7 +560,7 @@ namespace CharacterEditorDeluxe
                 {
                     for (int i = 0; i < StatFields.Length; i++)
                         if (statDirty[i] || all && i > 0 && skillsChanged)
-                            typeof(characterScript).GetField(StatFields[i], InstanceFlags).SetValue(character, stagedStats[i]);
+                            StatMembers[i].SetValue(character, ClampStatValue(stagedStats[i]));
                     overrides.RecordApplied(character, skillsChanged, statDirty[0]);
                     if (character.perks == null || character.perks.Length != stagedPerks.Length)
                         character.perks = new bool[stagedPerks.Length];
@@ -461,6 +571,21 @@ namespace CharacterEditorDeluxe
             }
             if (selected != null) LoadSelection(selected);
             status = "Applied to " + applied + " employee(s). Save the game to persist locked values.";
+        }
+
+        private float ClampStatValue(float value, bool warn = true)
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value))
+            {
+                if (warn) Logger.LogWarning("Reset non-finite employee stat to 0.");
+                return 0f;
+            }
+            if (value < 0f || value > cap)
+            {
+                if (warn) Logger.LogWarning("Clamped employee stat to safe cap " + cap.ToString(CultureInfo.InvariantCulture) + ".");
+                return Mathf.Clamp(value, 0f, cap);
+            }
+            return value;
         }
 
         private void RefreshPerkCatalog()
@@ -490,10 +615,13 @@ namespace CharacterEditorDeluxe
                 PerkInfo info = ParsePerkText(officialText);
                 if (info == null)
                 {
-                    Logger.LogWarning("Official English tooltip unavailable for perk index " + i + ".");
-                    info = new PerkInfo { Name = "Perk " + i.ToString(CultureInfo.InvariantCulture), Description = "Official English effect text is unavailable for this perk." };
+                    info = new PerkInfo { Name = "Unknown / unresolved", Description = "The official game name or effect could not be resolved; hidden by default.", Kind = PerkKind.Unknown };
                 }
                 else localized++;
+                info.Index = i;
+                if (!string.Equals(info.Name, "Unknown / unresolved", StringComparison.Ordinal))
+                    info.Kind = ClassifyPerk(info.Name, info.Description);
+                info.Content = new GUIContent(info.Name, "CEDPERK:" + i.ToString(CultureInfo.InvariantCulture));
                 catalog[i] = info;
             }
             perkCatalog = catalog;
@@ -512,13 +640,54 @@ namespace CharacterEditorDeluxe
             effect = Regex.Replace(effect, "<[^>]+>", "");
             effect = Regex.Replace(effect, @"\s+", " ").Trim();
             if (name.Length == 0 || effect.Length == 0) return null;
-            return new PerkInfo { Name = name, Description = effect };
+            return new PerkInfo { Name = name, Description = effect, Kind = PerkKind.Unknown };
+        }
+
+        private static PerkKind ClassifyPerk(string name, string description)
+        {
+            string key = (name ?? string.Empty).Trim().ToLowerInvariant();
+            switch (key)
+            {
+                case "greedy":
+                case "unfocused":
+                case "untalented":
+                case "immunocompromised":
+                case "unlucky":
+                case "messy":
+                case "stress-averse":
+                    return PerkKind.Negative;
+                case "star designer":
+                case "inexhaustible":
+                case "error-free":
+                case "loyal":
+                case "talented":
+                case "luck":
+                case "sporty":
+                case "orderly":
+                case "nature lover":
+                case "medical miracle":
+                case "inuit":
+                case "modest":
+                case "iron bladder":
+                case "leadership":
+                case "all-rounder":
+                case "philanthropist":
+                case "pixel artist":
+                case "porting specialist":
+                case "imaginative":
+                case "engine expert":
+                case "workaholic":
+                case "efficient":
+                case "ceo":
+                    return PerkKind.Neutral;
+            }
+            return PerkKind.Unknown;
         }
 
         private PerkInfo GetPerkInfo(int index)
         {
             if (index >= 0 && index < perkCatalog.Length && perkCatalog[index] != null) return perkCatalog[index];
-            return new PerkInfo { Name = "Perk " + index.ToString(CultureInfo.InvariantCulture), Description = "Waiting for the game's English perk text." };
+            return new PerkInfo { Index = index, Name = "Unknown / unresolved", Description = "The official game name or effect could not be resolved.", Kind = PerkKind.Unknown, Content = new GUIContent("Unknown / unresolved", "CEDPERK:" + index.ToString(CultureInfo.InvariantCulture)) };
         }
 
         private void DrawPerkTooltip()
@@ -592,10 +761,15 @@ namespace CharacterEditorDeluxe
         {
             try
             {
-                foreach (string name in StatFields)
-                    typeof(characterScript).GetField(name, InstanceFlags).SetValue(character, (float)cap);
+                for (int i = 0; i < StatMembers.Length; i++) StatMembers[i].SetValue(character, (float)cap);
                 overrides.RecordApplied(character, true, true);
-                if (character.perks != null) for (int i = 0; i < character.perks.Length; i++) character.perks[i] = true;
+                if (character.perks != null && perkCatalog.Length > 0)
+                {
+                    for (int i = 0; i < character.perks.Length; i++) character.perks[i] = false;
+                    foreach (PerkInfo perk in perkCatalog)
+                        if (perk != null && perk.Kind == PerkKind.Positive && perk.Index >= 0 && perk.Index < character.perks.Length)
+                            character.perks[perk.Index] = true;
+                }
             }
             catch (Exception ex) { Logger.LogWarning("Auto-max skipped an incomplete character: " + ex.Message); }
         }

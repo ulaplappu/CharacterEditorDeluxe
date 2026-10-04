@@ -6,6 +6,7 @@ using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using HarmonyLib;
+using UnityEngine;
 
 namespace CharacterEditorDeluxe
 {
@@ -14,6 +15,7 @@ namespace CharacterEditorDeluxe
         private const string SaveKey = "com.codex.mgt2.charactereditordeluxe.statlocks";
         private const int FormatVersion = 1;
         private const int MaxRecords = 10000;
+        private const float SafeStatCap = 100f;
 
         private sealed class Record
         {
@@ -137,14 +139,14 @@ namespace CharacterEditorDeluxe
 
         private static void RestoreSkills(Record record, characterScript character)
         {
-            character.s_gamedesign = record.Skills[0];
-            character.s_programmieren = record.Skills[1];
-            character.s_grafik = record.Skills[2];
-            character.s_sound = record.Skills[3];
-            character.s_pr = record.Skills[4];
-            character.s_gametests = record.Skills[5];
-            character.s_technik = record.Skills[6];
-            character.s_forschen = record.Skills[7];
+            character.s_gamedesign = SafeStat(record.Skills[0]);
+            character.s_programmieren = SafeStat(record.Skills[1]);
+            character.s_grafik = SafeStat(record.Skills[2]);
+            character.s_sound = SafeStat(record.Skills[3]);
+            character.s_pr = SafeStat(record.Skills[4]);
+            character.s_gametests = SafeStat(record.Skills[5]);
+            character.s_technik = SafeStat(record.Skills[6]);
+            character.s_forschen = SafeStat(record.Skills[7]);
         }
 
         private void RestoreLocked(characterScript character)
@@ -152,7 +154,7 @@ namespace CharacterEditorDeluxe
             Record record;
             if (character == null || !records.TryGetValue(character, out record)) return;
             if (GlobalLock.Value && record.LockStats) RestoreSkills(record, character);
-            if (record.LockMotivation) character.s_motivation = record.Motivation;
+            if (record.LockMotivation) character.s_motivation = SafeStat(record.Motivation);
         }
 
         private static void AfterLearn(characterScript __instance)
@@ -268,8 +270,8 @@ namespace CharacterEditorDeluxe
                     record.Name = reader.ReadString();
                     record.LockStats = reader.ReadBoolean();
                     record.LockMotivation = reader.ReadBoolean();
-                    record.Motivation = reader.ReadSingle();
-                    for (int j = 0; j < record.Skills.Length; j++) record.Skills[j] = reader.ReadSingle();
+                    record.Motivation = SafeStat(reader.ReadSingle());
+                    for (int j = 0; j < record.Skills.Length; j++) record.Skills[j] = SafeStat(reader.ReadSingle());
                     if (IsFinite(record.Motivation) && AllFinite(record.Skills)) saved[record.Id] = record;
                 }
             }
@@ -294,6 +296,12 @@ namespace CharacterEditorDeluxe
         }
 
         private static bool IsFinite(float value) { return !float.IsNaN(value) && !float.IsInfinity(value); }
+
+        private static float SafeStat(float value)
+        {
+            if (!IsFinite(value)) return 0f;
+            return Mathf.Clamp(value, 0f, SafeStatCap);
+        }
 
         private static bool AllFinite(float[] values)
         {

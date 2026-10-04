@@ -12,15 +12,14 @@ namespace CharacterEditorDeluxe
 {
     internal sealed class DesignPriorityOverrides
     {
-        private static readonly int[] AllowedMaxima = { 100, 200, 500, 1000, 9999, 100000 };
-        private static readonly string[] MaximumLabels = { "100%", "200%", "500%", "1000%", "9999%", "100000%" };
+        private static readonly int[] AllowedMaxima = { 100, 200 };
+        private static readonly string[] MaximumLabels = { "100%", "200%" };
         private static readonly string[] CategoryLabels = { "Gameplay", "Graphics", "Sound", "Technical" };
         private static DesignPriorityOverrides active;
         private readonly ManualLogSource log;
         private readonly ConfigEntry<bool> enabled;
         private readonly ConfigEntry<int> maximum;
         private readonly ConfigEntry<bool> allowOver100;
-        private readonly HashSet<string> loggedWork = new HashSet<string>();
         private Harmony harmony;
         private Menu_DevGame menu;
         private Menu_Dev_ChangeDesignproritaet changeMenu;
@@ -60,8 +59,7 @@ namespace CharacterEditorDeluxe
             harmony.Patch(AccessTools.Method(typeof(Menu_Dev_ChangeDesignproritaet), "UpdateGesamtArbeitsprioritaet"),
                 transpiler: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(PatchTotalIndicator)));
             harmony.Patch(AccessTools.Method(typeof(taskGame), "Work"),
-                prefix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(BeforeWork)),
-                postfix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(AfterWork)));
+                prefix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(BeforeWork)));
             harmony.Patch(AccessTools.Method(typeof(savegameScript), "SaveGames"),
                 postfix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(AfterSaveGames)));
             harmony.Patch(AccessTools.Method(typeof(savegameScript), "LoadGames"),
@@ -75,11 +73,19 @@ namespace CharacterEditorDeluxe
             if (active == this) active = null;
         }
 
+        internal void ResetToVanilla()
+        {
+            enabled.Value = false;
+            allowOver100.Value = false;
+            maximum.Value = 100;
+            for (int i = 0; i < priorityInputs.Length; i++) priorityInputs[i] = null;
+        }
+
         internal void DrawOptions()
         {
             enabled.Value = GUILayout.Toggle(enabled.Value, "Uncapped Design Priority");
             GUILayout.BeginHorizontal();
-            GUILayout.Label("Priority Max [100-100000]", GUILayout.Width(180));
+            GUILayout.Label("Safe max [100-200]", GUILayout.Width(180));
             int selected = Array.IndexOf(AllowedMaxima, maximum.Value);
             int next = GUILayout.SelectionGrid(Math.Max(0, selected), MaximumLabels, MaximumLabels.Length);
             if (next >= 0 && next < AllowedMaxima.Length && next != selected) maximum.Value = AllowedMaxima[next];
@@ -128,7 +134,6 @@ namespace CharacterEditorDeluxe
             }
             lastEnabled = nowEnabled;
             lastMaximum = nowMaximum;
-            log.LogInfo("Design priority sliders: enabled=" + nowEnabled + ", configured maximum=" + nowMaximum + "%, effective slider maximum=" + (rawMax * 5) + "%.");
         }
 
         private static int NormalizeMaximum(int value)
@@ -201,7 +206,6 @@ namespace CharacterEditorDeluxe
             menu.SetAP_Sound();
             menu.SetAP_Technik();
             AccessTools.Method(typeof(Menu_DevGame), "UpdateGesamtArbeitsprioritaet").Invoke(menu, null);
-            log.LogInfo("Priority menu applied raw=" + string.Join("/", values) + " percent=" + string.Join("/", priorityInputs));
         }
 
         private static int TotalLimit()
@@ -302,7 +306,6 @@ namespace CharacterEditorDeluxe
             internal float Before;
             internal float Original;
             internal float Effective;
-            internal bool Tracing;
         }
 
         private static void BeforeWork(taskGame __instance, ref float __0, int __1, out WorkSample __state)
@@ -312,11 +315,9 @@ namespace CharacterEditorDeluxe
             gameScript game = __instance.gS_;
             // ownerID may be the external publisher; developerID identifies the studio doing the work.
             if (game == null || active.player == null || game.developerID != active.player.myID) return;
-            int raw = __1 == 0 ? game.gameAP_Gameplay : __1 == 1 ? game.gameAP_Grafik : __1 == 2 ? game.gameAP_Sound : game.gameAP_Technik;
+            int raw = ClampStoredPriority(game, __1);
             float original = __0;
             float before = ReadPoints(game, __1);
-            bool tracing = UpdateContentOverrides.IsTracing;
-            if (tracing) __state = new WorkSample { Game = game, Category = __1, Before = before, Original = original, Effective = original, Tracing = true };
             if (!active.enabled.Value || raw <= 20) return;
             if (float.IsNaN(original) || float.IsInfinity(original) || float.IsNaN(before) || float.IsInfinity(before))
             {
@@ -330,18 +331,7 @@ namespace CharacterEditorDeluxe
                 return;
             }
             __0 = (float)boosted;
-            __state = new WorkSample { Game = game, Category = __1, Before = before, Original = original, Effective = __0, Tracing = tracing };
-        }
-
-        private static void AfterWork(WorkSample __state)
-        {
-            if (active == null || __state.Game == null || !UpdateContentOverrides.IsTracing) return;
-            string key = __state.Game.myID.ToString(CultureInfo.InvariantCulture) + ":" + __state.Category.ToString(CultureInfo.InvariantCulture);
-            float after = ReadPoints(__state.Game, __state.Category);
-            bool invalid = float.IsNaN(after) || float.IsInfinity(after) || after < 0f ||
-                           float.IsNaN(__state.Effective) || float.IsInfinity(__state.Effective) || __state.Effective < 0f;
-            if (!invalid && !active.loggedWork.Add(key)) return;
-            active.log.LogInfo("Priority work game=" + __state.Game.myID + " enabled=" + active.enabled.Value + " raw=" + __state.Game.gameAP_Gameplay + "/" + __state.Game.gameAP_Grafik + "/" + __state.Game.gameAP_Sound + "/" + __state.Game.gameAP_Technik + " category=" + __state.Category + " input=" + __state.Original.ToString("R", CultureInfo.InvariantCulture) + " passedToVanilla=" + __state.Effective.ToString("R", CultureInfo.InvariantCulture) + " pointsBefore=" + __state.Before.ToString("R", CultureInfo.InvariantCulture) + " pointsAfter=" + after.ToString("R", CultureInfo.InvariantCulture) + " delta=" + ((double)after - __state.Before).ToString("R", CultureInfo.InvariantCulture) + " numeric=" + (invalid ? "invalid" : "ok"));
+            __state = new WorkSample { Game = game, Category = __1, Before = before, Original = original, Effective = __0 };
         }
 
         private static float ReadPoints(gameScript game, int category)
@@ -359,9 +349,29 @@ namespace CharacterEditorDeluxe
             foreach (gameScript game in UnityEngine.Object.FindObjectsOfType<gameScript>())
             {
                 if (game == null || game.developerID != active.player.myID) continue;
+                if (active.enabled.Value) ClampStoredPriorities(game);
                 if (game.gameAP_Gameplay <= 20 && game.gameAP_Grafik <= 20 && game.gameAP_Sound <= 20 && game.gameAP_Technik <= 20) continue;
-                active.log.LogInfo("Priority " + operation + " game=" + game.myID + " raw=" + game.gameAP_Gameplay + "/" + game.gameAP_Grafik + "/" + game.gameAP_Sound + "/" + game.gameAP_Technik + " percent=" + (game.gameAP_Gameplay * 5) + "/" + (game.gameAP_Grafik * 5) + "/" + (game.gameAP_Sound * 5) + "/" + (game.gameAP_Technik * 5));
             }
+        }
+
+        private static int ClampStoredPriority(gameScript game, int category)
+        {
+            int raw = category == 0 ? game.gameAP_Gameplay : category == 1 ? game.gameAP_Grafik : category == 2 ? game.gameAP_Sound : game.gameAP_Technik;
+            int safe = Mathf.Clamp(raw, 0, active.maximum.Value / 5);
+            if (safe != raw)
+            {
+                if (category == 0) game.gameAP_Gameplay = safe;
+                else if (category == 1) game.gameAP_Grafik = safe;
+                else if (category == 2) game.gameAP_Sound = safe;
+                else game.gameAP_Technik = safe;
+                active.log.LogWarning("Clamped stored design priority for game=" + game.myID + " category=" + category + " to " + (safe * 5) + "%. ");
+            }
+            return safe;
+        }
+
+        private static void ClampStoredPriorities(gameScript game)
+        {
+            for (int category = 0; category < 4; category++) ClampStoredPriority(game, category);
         }
     }
 }
