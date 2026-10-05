@@ -6,6 +6,8 @@ obj/
 *.suo
 *.pdb
 *.mdb
+*.deps.json
+*.runtimeconfig.json
 *.dll
 *.exe
 *.so
@@ -23,12 +25,23 @@ obj/
 *.orig
 *.rej
 *.log
+*.backup
+*.backup.*
+*.old
+*.old.*
+*_backup.dll
+*.backup.dll
 
 # Analysis output and temporary diagnostics
 .analysis/
 diagnostics/
+profiling/
 temp/
 tmp/
+test-results/
+TestResults/
+backups/
+backup/
 
 # Game saves, logs, and generated Unity data
 logs/

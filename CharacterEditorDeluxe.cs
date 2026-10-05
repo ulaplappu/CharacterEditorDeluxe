@@ -9,7 +9,7 @@ using UnityEngine;
 
 namespace CharacterEditorDeluxe
 {
-    [BepInPlugin("com.codex.mgt2.charactereditordeluxe", "MGT2 Character Editor Deluxe", "1.0.6")]
+    [BepInPlugin("com.codex.mgt2.charactereditordeluxe", "MGT2 Character Editor Deluxe", "1.0.7")]
     public sealed class Plugin : BaseUnityPlugin
     {
         private static Plugin activePlugin;
@@ -47,10 +47,13 @@ namespace CharacterEditorDeluxe
         private readonly bool[] statDirty = new bool[9];
         private readonly string[] statInputs = new string[9];
         private bool[] stagedPerks = new bool[0];
+        private bool perksDirty;
         private string status = "Select an employee, adjust values, then apply.";
         private float nextLookup;
         private int cap;
         private bool uiErrorLogged;
+        private bool employeeReadWarningLogged;
+        private bool perkCountWarningLogged;
         private Rect windowRect;
         private bool resizing;
         private Vector2 resizeStartMouse;
@@ -128,6 +131,20 @@ namespace CharacterEditorDeluxe
             if (activePlugin.updateContent != null) activePlugin.updateContent.SetPlayer(source);
         }
 
+        internal static void ResetEmployeeTracking()
+        {
+            if (activePlugin == null) return;
+            activePlugin.trackedGame = null;
+            activePlugin.trackedCharacters.Clear();
+            activePlugin.pendingNewCharacters.Clear();
+            activePlugin.employeeCache.Clear();
+            activePlugin.selected = null;
+            activePlugin.selectedIndex = 0;
+            Array.Clear(activePlugin.statDirty, 0, activePlugin.statDirty.Length);
+            activePlugin.stagedPerks = new bool[0];
+            if (activePlugin.updateContent != null) activePlugin.updateContent.ResetPendingTasks();
+        }
+
         private void Update()
         {
             if (Input.GetKeyDown(KeyCode.F8)) SetVisible(!visible);
@@ -143,7 +160,7 @@ namespace CharacterEditorDeluxe
 
             bool autoMax = autoMaxNewEmployees.Value;
             bool refreshEditor = visible;
-            bool refreshDesignMenus = visible || designPriorities.NeedsMenuUpdate;
+            bool refreshDesignMenus = designPriorities.NeedsMenuUpdate;
             if ((refreshEditor || autoMax || refreshDesignMenus) && Time.unscaledTime >= nextLookup)
             {
                 nextLookup = Time.unscaledTime + 1f;
@@ -209,6 +226,10 @@ namespace CharacterEditorDeluxe
         {
             List<characterScript> employees;
             if (!DrawEmployeeSelector(out employees)) return;
+            bool motivationLocked = overrides.IsMotivationLocked(selected);
+            bool nextMotivationLocked = GUILayout.Toggle(motivationLocked, "Lock selected employee's motivation");
+            if (nextMotivationLocked != motivationLocked)
+                overrides.SetMotivationLock(selected, nextMotivationLocked);
             RefreshCurrentStats();
             GUILayout.BeginVertical("box");
             GUILayout.Label("STATS  (safe range 0-" + cap + ")", GUI.skin.GetStyle("boldlabel"));
@@ -244,7 +265,14 @@ namespace CharacterEditorDeluxe
             if (GUILayout.Button("Apply positive to all")) ApplyPositivePerks(employees, true);
             GUILayout.EndHorizontal();
             GUILayout.BeginHorizontal();
-            if (GUILayout.Button("Clear all")) for (int i = 0; i < stagedPerks.Length; i++) stagedPerks[i] = false;
+            if (GUILayout.Button("Clear all"))
+            {
+                for (int i = 0; i < stagedPerks.Length; i++)
+                {
+                    if (stagedPerks[i]) perksDirty = true;
+                    stagedPerks[i] = false;
+                }
+            }
             GUILayout.EndHorizontal();
             GUILayout.EndVertical();
             GUILayout.BeginHorizontal();
@@ -346,7 +374,11 @@ namespace CharacterEditorDeluxe
         {
             bool selectedValue = stagedPerks != null && perk.Index >= 0 && perk.Index < stagedPerks.Length && stagedPerks[perk.Index];
             bool value = GUILayout.Toggle(selectedValue, perk.Content);
-            if (value != selectedValue && perk.Index >= 0 && perk.Index < stagedPerks.Length) stagedPerks[perk.Index] = value;
+            if (value != selectedValue && perk.Index >= 0 && perk.Index < stagedPerks.Length)
+            {
+                stagedPerks[perk.Index] = value;
+                perksDirty = true;
+            }
             if (value) selectedCount++;
         }
 
@@ -354,12 +386,17 @@ namespace CharacterEditorDeluxe
         {
             bool selectedValue = stagedPerks != null && perk.Index >= 0 && perk.Index < stagedPerks.Length && stagedPerks[perk.Index];
             bool value = GUILayout.Toggle(selectedValue, perk.Content);
-            if (value != selectedValue && perk.Index >= 0 && perk.Index < stagedPerks.Length) stagedPerks[perk.Index] = value;
+            if (value != selectedValue && perk.Index >= 0 && perk.Index < stagedPerks.Length)
+            {
+                stagedPerks[perk.Index] = value;
+                perksDirty = true;
+            }
         }
 
         private void StageAllPositivePerks()
         {
             if (stagedPerks == null) return;
+            perksDirty = true;
             for (int i = 0; i < stagedPerks.Length; i++) stagedPerks[i] = false;
             foreach (PerkInfo perk in perkCatalog)
                 if (perk != null && perk.Kind == PerkKind.Positive && perk.Index >= 0 && perk.Index < stagedPerks.Length)
@@ -405,7 +442,7 @@ namespace CharacterEditorDeluxe
             if (int.TryParse(capText, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed)) cap = Mathf.Clamp(parsed, 1, 100);
             configuredCap.Value = cap;
             if (GUILayout.Button("Reset cheats to vanilla")) ResetToVanilla();
-            GUILayout.Label("Version 1.0.6 | F8 toggles this window | window position and size are saved.");
+            GUILayout.Label("Version 1.0.7 | F8 toggles this window | window position and size are saved.");
             GUILayout.EndVertical();
         }
 
@@ -425,6 +462,7 @@ namespace CharacterEditorDeluxe
         {
             autoMaxNewEmployees.Value = false;
             overrides.GlobalLock.Value = false;
+            overrides.ClearLocks();
             designPriorities.ResetToVanilla();
             updateContent.ResetToVanilla();
             cap = 100;
@@ -570,8 +608,13 @@ namespace CharacterEditorDeluxe
             {
                 var array = game.arrayCharactersScripts;
                 if (array != null) foreach (var character in array) if (character != null) employeeCache.Add(character);
+                employeeReadWarningLogged = false;
             }
-            catch (Exception ex) { Logger.LogWarning("Could not read employee list: " + ex.Message); }
+            catch (Exception ex)
+            {
+                if (!employeeReadWarningLogged) Logger.LogWarning("Could not read employee list: " + ex.Message);
+                employeeReadWarningLogged = true;
+            }
         }
 
         private void ChangeSelection(int delta, List<characterScript> employees)
@@ -600,9 +643,14 @@ namespace CharacterEditorDeluxe
                     for (int i = 0; i < ui.Length; i++)
                         if (ui[i] != null && i >= perkCount) perkCount = i + 1;
             }
-            catch { }
+            catch (Exception ex)
+            {
+                if (!perkCountWarningLogged) Logger.LogWarning("Could not read the game's perk catalog size: " + ex.Message);
+                perkCountWarningLogged = true;
+            }
             stagedPerks = new bool[perkCount];
             Array.Copy(source, stagedPerks, source.Length);
+            perksDirty = false;
             status = "Staged changes are not written until an Apply button is used.";
         }
 
@@ -634,6 +682,7 @@ namespace CharacterEditorDeluxe
 
         private void Apply(List<characterScript> employees, bool all)
         {
+            if (!CommitValidStatInputs()) return;
             int applied = 0;
             bool skillsChanged = false;
             for (int i = 1; i < statDirty.Length; i++) skillsChanged |= statDirty[i];
@@ -646,9 +695,12 @@ namespace CharacterEditorDeluxe
                         if (statDirty[i] || all && i > 0 && skillsChanged)
                             StatMembers[i].SetValue(character, ClampStatValue(stagedStats[i]));
                     overrides.RecordApplied(character, skillsChanged, statDirty[0]);
-                    if (character.perks == null || character.perks.Length != stagedPerks.Length)
-                        character.perks = new bool[stagedPerks.Length];
-                    Array.Copy(stagedPerks, character.perks, stagedPerks.Length);
+                    if (perksDirty)
+                    {
+                        if (character.perks == null || character.perks.Length != stagedPerks.Length)
+                            character.perks = new bool[stagedPerks.Length];
+                        Array.Copy(stagedPerks, character.perks, stagedPerks.Length);
+                    }
                     applied++;
                 }
                 catch (Exception ex) { Logger.LogWarning("Skipped an invalid employee record: " + ex.Message); }
@@ -670,6 +722,26 @@ namespace CharacterEditorDeluxe
                 return Mathf.Clamp(value, 0f, cap);
             }
             return value;
+        }
+
+        private bool CommitValidStatInputs()
+        {
+            for (int i = 0; i < statInputs.Length; i++)
+            {
+                float value;
+                if (!float.TryParse(statInputs[i], NumberStyles.Float, CultureInfo.InvariantCulture, out value) ||
+                    float.IsNaN(value) || float.IsInfinity(value))
+                {
+                    status = "Finish each stat entry with a finite number between 0 and " + cap + " before applying.";
+                    return false;
+                }
+                if (statDirty[i])
+                {
+                    stagedStats[i] = Mathf.Clamp(value, 0f, cap);
+                    statInputs[i] = stagedStats[i].ToString("0.##", CultureInfo.InvariantCulture);
+                }
+            }
+            return true;
         }
 
         private void RefreshPerkCatalog()

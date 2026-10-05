@@ -1,25 +1,29 @@
 # Character Editor Deluxe
 
-Version 1.0.6
+Version 1.0.7
 
 An unofficial BepInEx plugin for editing employees and safe development options in Mad Games Tycoon 2.
 
 ## Features
 
-- Edit employee skills and motivation on the game's 0–100 scale.
-- Lock edited stats and motivation against vanilla changes.
-- Apply positive-only perks to one employee or all employees.
-- Keep neutral perks (CEO, Loyal, Nature Lover, Modest) and negative perks (Greedy, Unfocused, Untalented, Immunocompromised, Unlucky, Messy, Stress-Averse) manual-only.
-- Bulk-edit current employees and optionally auto-max new hires.
-- Extended Design / Work Priority up to 200% per category, including normal games, sequels, spinoffs, remasters, ports, contracts, Paid Addons, and MMO Addons.
-- Set Game Update content contributions up to the safe 100% maximum.
-- Apply numeric range and overflow protections before modified values reach game calculations.
+- Edit employee stats and motivation on the game's 0–100 scale, with optional stat and motivation locks.
+- Apply positive-only perks to one employee or in bulk. Neutral perks (CEO, Loyal, Nature Lover, Modest) and negative perks (Greedy, Unfocused, Untalented, Immunocompromised, Unlucky, Messy, Stress-Averse) remain manual-only.
+- Bulk-edit employees and optionally auto-max new hires.
+- Extend Design / Work Priority up to 200% per category for normal games, sequels, spinoffs, remasters, ports, contracts, Paid Addons, and MMO Addons.
+- Set Game Update content contribution up to the safe 100% maximum.
+- Protect modified values from invalid numeric input and overflow.
+
+## Version 1.0.7 fixes
+
+- Disabled Extended Design / Work Priority no longer clamps stored game priorities during load or persistence.
+- Repeated stored-priority clamp warnings are limited to avoid per-game log spam.
+- The prior nonexistent priority-menu lifecycle probe was removed to avoid a startup warning.
 
 ## Performance
 
-Version 1.0.6 removes recurring `FindObjectOfType` scene searches from the design-priority update loop and uses lifecycle hooks and cached menu references instead. This removes the measured priority-updater spikes of approximately 65 ms; steady-state updater time measured approximately 0.001–0.002 ms per call.
+The priority updater no longer performs recurring `FindObjectOfType` scene searches; it uses lifecycle hooks and cached menu references. Profiling of that updater measured a reduction from approximately 65 ms spikes to approximately 0.001–0.002 ms per steady-state call.
 
-The release also reduces unnecessary closed-window polling, repeated tooltip/stat refresh work, temporary allocations, and repetitive safety-cap log messages. These are mod-specific measurements and code-path changes; they do not establish a full-game FPS improvement.
+The mod also reduces unnecessary polling while the editor is closed, repeated refresh work, temporary allocations, and repetitive safety-cap logs. These are mod-specific measurements and code-path changes; they do not establish a full-game FPS improvement. Results vary with the game and other installed plugins.
 
 ## Requirements
 
@@ -30,34 +34,26 @@ The release also reduces unnecessary closed-window polling, repeated tooltip/sta
 ## Installation
 
 1. Download `CharacterEditorDeluxe.dll` from the GitHub Release assets.
-2. Create this folder in the game installation if it does not exist:
-
-   ```text
-   BepInEx\plugins\CharacterEditorDeluxe\
-   ```
-
+2. Create `BepInEx\plugins\CharacterEditorDeluxe\` in the game installation if it does not exist.
 3. Copy `CharacterEditorDeluxe.dll` into that folder.
-4. Start the game. BepInEx creates the configuration file at:
-
-   ```text
-   BepInEx\config\com.codex.mgt2.charactereditordeluxe.cfg
-   ```
+4. Start the game. BepInEx creates the configuration at `BepInEx\config\com.codex.mgt2.charactereditordeluxe.cfg`.
 
 ## Controls
 
-Press **F8** to open or close the editor. Use the employee arrows to select an employee, stage changes, and apply them to the selected employee or all employees. The editor tabs contain the perk, priority, update-content, and safety options.
+Press **F8** to open or close the editor. Select an employee with the navigation arrows, stage changes, then apply them to the selected employee or all employees. The Employees tab includes per-employee motivation locks and the global stat-lock option; other tabs contain perk, priority, update-content, and safety settings.
 
-## Safe Limits
+## Safe limits
 
-- Employee skills and motivation: 0–100.
+- Employee stats and motivation: 0–100.
 - Extended Design / Work Priority: at most 200% per category.
 - Game Update content: at most 100%.
-- Non-finite and out-of-range values are rejected or clamped before use.
+- Non-finite and unsafe values are rejected or clamped before modified values reach game calculations.
 - Disabling an optional feature restores vanilla calculations for future actions; values already saved remain in the save.
+- **Reset cheats to vanilla** also clears employee lock records.
 
 ## Compatibility
 
-The mod targets Mad Games Tycoon 2 with BepInEx 5. Its extended priority hooks support normal game development and the listed game/addon types. Other plugins may also patch game methods; compatibility with every mod combination is not guaranteed.
+The mod targets Mad Games Tycoon 2 with BepInEx 5. Extended priority hooks support the game and addon types listed above. Other plugins may patch the same game methods; compatibility with every mod combination is not guaranteed.
 
 This repository does not include game files, Unity assemblies, BepInEx binaries, saves, logs, or third-party mods.
 

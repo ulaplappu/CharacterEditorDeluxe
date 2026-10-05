@@ -28,6 +28,9 @@ namespace CharacterEditorDeluxe
         private mainScript player;
         private bool lastEnabled;
         private int lastMaximum;
+        private bool lastAllowOver100;
+        private int loggedWorkWarnings;
+        private readonly HashSet<int> loggedPriorityClampGames = new HashSet<int>();
         private int[] rememberedPriorities;
         private readonly string[] priorityInputs = new string[4];
 
@@ -67,19 +70,25 @@ namespace CharacterEditorDeluxe
             if (gameLoad != null)
                 harmony.Patch(gameLoad, postfix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(AfterGameLoaded)));
             harmony.Patch(AccessTools.Method(typeof(Menu_Dev_ChangeDesignproritaet), "Init"),
-                prefix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(BeforeChangeMenuOpened)));
+                postfix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(AfterChangeMenuOpened)));
             harmony.Patch(AccessTools.Method(typeof(Menu_Dev_ChangeDesignproritaet), "BUTTON_OK"),
                 transpiler: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(PatchChangeValidation)));
             harmony.Patch(AccessTools.Method(typeof(Menu_Dev_ChangeDesignproritaet), "UpdateGesamtArbeitsprioritaet"),
                 transpiler: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(PatchTotalIndicator)));
             harmony.Patch(AccessTools.Method(typeof(Menu_Dev_AddonDo), "Init"),
                 postfix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(AfterAddonMenuOpened)));
+            var addonEnable = AccessTools.Method(typeof(Menu_Dev_AddonDo), "OnEnable");
+            if (addonEnable != null)
+                harmony.Patch(addonEnable, postfix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(AfterAddonMenuOpened)));
             harmony.Patch(AccessTools.Method(typeof(Menu_Dev_AddonDo), "BUTTON_Start"),
                 transpiler: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(PatchAddonStartValidation)));
             harmony.Patch(AccessTools.Method(typeof(Menu_Dev_AddonDo), "UpdateGesamtArbeitsprioritaet"),
                 transpiler: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(PatchTotalIndicator)));
             harmony.Patch(AccessTools.Method(typeof(Menu_Dev_MMOAddon), "Init"),
                 postfix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(AfterMmoAddonMenuOpened)));
+            var mmoAddonEnable = AccessTools.Method(typeof(Menu_Dev_MMOAddon), "OnEnable");
+            if (mmoAddonEnable != null)
+                harmony.Patch(mmoAddonEnable, postfix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(AfterMmoAddonMenuOpened)));
             harmony.Patch(AccessTools.Method(typeof(Menu_Dev_MMOAddon), "BUTTON_Start"),
                 transpiler: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(PatchMmoAddonStartValidation)));
             harmony.Patch(AccessTools.Method(typeof(Menu_Dev_MMOAddon), "UpdateGesamtArbeitsprioritaet"),
@@ -88,8 +97,6 @@ namespace CharacterEditorDeluxe
                 prefix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(BeforeWork)));
             harmony.Patch(AccessTools.Method(typeof(savegameScript), "SaveGames"),
                 postfix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(AfterSaveGames)));
-            harmony.Patch(AccessTools.Method(typeof(savegameScript), "LoadGames"),
-                postfix: new HarmonyMethod(typeof(DesignPriorityOverrides), nameof(AfterLoadGames)));
             log.LogInfo("Design priority patches installed: game, paid addon, MMO addon, validation, and player development work.");
         }
 
@@ -99,7 +106,15 @@ namespace CharacterEditorDeluxe
             if (active == this) active = null;
         }
 
-        internal bool NeedsMenuUpdate { get { return enabled.Value || lastEnabled; } }
+        internal bool NeedsMenuUpdate
+        {
+            get
+            {
+                return enabled.Value != lastEnabled ||
+                    NormalizeMaximum(maximum.Value) != lastMaximum ||
+                    allowOver100.Value != lastAllowOver100;
+            }
+        }
 
         internal void SetPlayer(mainScript source)
         {
@@ -112,6 +127,7 @@ namespace CharacterEditorDeluxe
             allowOver100.Value = false;
             maximum.Value = 100;
             for (int i = 0; i < priorityInputs.Length; i++) priorityInputs[i] = null;
+            rememberedPriorities = null;
         }
 
         internal void DrawOptions()
@@ -147,33 +163,41 @@ namespace CharacterEditorDeluxe
             if (maximum.Value != nowMaximum) maximum.Value = nowMaximum;
             int rawMax = nowEnabled ? nowMaximum / 5 : 20;
             bool restoreVanilla = lastEnabled && !nowEnabled;
+            bool settingsChanged = lastEnabled != nowEnabled ||
+                lastMaximum != nowMaximum ||
+                lastAllowOver100 != allowOver100.Value;
             if (changeMenu != null && changeMenu.isActiveAndEnabled)
             {
                 var changeSliders = GetChangeSliders(changeMenu);
                 if (changeSliders != null)
                     SetSliderMaximum(changeSliders, rawMax);
             }
-            UpdateAddonMenu(addonMenu, rawMax, restoreVanilla);
-            UpdateMmoAddonMenu(mmoAddonMenu, rawMax, restoreVanilla);
-            if (menu != null && menu.isActiveAndEnabled && !(lastEnabled == nowEnabled && lastMaximum == nowMaximum && SlidersMatch(menu, rawMax)))
+            UpdateAddonMenu(addonMenu, rawMax, settingsChanged);
+            UpdateMmoAddonMenu(mmoAddonMenu, rawMax, settingsChanged);
+            if (menu != null && menu.isActiveAndEnabled &&
+                !(lastEnabled == nowEnabled && lastMaximum == nowMaximum &&
+                  lastAllowOver100 == allowOver100.Value && SlidersMatch(menu, rawMax)))
             {
                 var sliders = GetSliders(menu);
                 if (sliders != null)
                 {
                     SetSliderMaximum(sliders, rawMax);
-                    if (restoreVanilla && Total(menu) > 100)
+                    if (settingsChanged)
                     {
-                        SetSliderValues(sliders, new[] { 5, 5, 5, 5 });
                         menu.SetAP_Gameplay();
                         menu.SetAP_Grafik();
                         menu.SetAP_Sound();
                         menu.SetAP_Technik();
-                        for (int i = 0; i < priorityInputs.Length; i++) priorityInputs[i] = null;
+                        AccessTools.Method(typeof(Menu_DevGame), "UpdateGesamtArbeitsprioritaet").Invoke(menu, null);
+                        if (restoreVanilla)
+                            for (int i = 0; i < priorityInputs.Length; i++) priorityInputs[i] = null;
                     }
                 }
             }
+            if (settingsChanged) ClampStoredPrioritiesOnPersistence();
             lastEnabled = nowEnabled;
             lastMaximum = nowMaximum;
+            lastAllowOver100 = allowOver100.Value;
         }
 
         private static int NormalizeMaximum(int value)
@@ -235,11 +259,6 @@ namespace CharacterEditorDeluxe
             return true;
         }
 
-        private static int Total(Menu_DevGame source)
-        {
-            return (source.g_GameAP_Gameplay + source.g_GameAP_Grafik + source.g_GameAP_Sound + source.g_GameAP_Technik) * 5;
-        }
-
         private static int ReadPriority(Menu_DevGame source, int category)
         {
             return category == 0 ? source.g_GameAP_Gameplay : category == 1 ? source.g_GameAP_Grafik : category == 2 ? source.g_GameAP_Sound : source.g_GameAP_Technik;
@@ -269,48 +288,57 @@ namespace CharacterEditorDeluxe
 
         private static int TotalLimit()
         {
-            return active != null && active.enabled.Value && active.allowOver100.Value ? active.maximum.Value * 4 : 100;
+            return active != null && active.enabled.Value && active.allowOver100.Value ? NormalizeMaximum(active.maximum.Value) * 4 : 100;
+        }
+
+        private static int SafeRawMaximum()
+        {
+            return NormalizeMaximum(active.maximum.Value) / 5;
         }
 
         private static void BeforeCopyDesignSettings(Menu_DevGame __instance)
         {
             if (active == null || __instance == null) return;
             active.menu = __instance;
-            if (!active.enabled.Value) return;
             var sliders = GetSliders(__instance);
             if (sliders == null) return;
-            SetSliderMaximum(sliders, active.maximum.Value / 5);
+            SetSliderMaximum(sliders, active.enabled.Value ? SafeRawMaximum() : 20);
         }
 
-        private static void BeforeChangeMenuOpened(Menu_Dev_ChangeDesignproritaet __instance)
+        private static void AfterChangeMenuOpened(Menu_Dev_ChangeDesignproritaet __instance)
         {
             if (active == null || __instance == null) return;
             active.changeMenu = __instance;
-            if (!active.enabled.Value) return;
             var sliders = GetChangeSliders(__instance);
             if (sliders == null) return;
-            SetSliderMaximum(sliders, active.maximum.Value / 5);
+            SetSliderMaximum(sliders, active.enabled.Value ? SafeRawMaximum() : 20);
         }
 
         private static void AfterAddonMenuOpened(Menu_Dev_AddonDo __instance)
         {
             if (active == null || __instance == null) return;
             active.addonMenu = __instance;
-            if (!active.enabled.Value) return;
-            RestoreAddonPriorities(__instance, GetAddonSliders(__instance));
+            Slider[] sliders = GetAddonSliders(__instance);
+            if (sliders == null) return;
+            SetSliderMaximum(sliders, active.enabled.Value ? SafeRawMaximum() : 20);
+            if (active.enabled.Value) RestoreAddonPriorities(__instance, sliders);
+            else ApplyAddonPriorities(__instance);
         }
 
         private static void AfterMmoAddonMenuOpened(Menu_Dev_MMOAddon __instance)
         {
             if (active == null || __instance == null) return;
             active.mmoAddonMenu = __instance;
-            if (!active.enabled.Value) return;
-            RestoreMmoAddonPriorities(__instance, GetMmoAddonSliders(__instance));
+            Slider[] sliders = GetMmoAddonSliders(__instance);
+            if (sliders == null) return;
+            SetSliderMaximum(sliders, active.enabled.Value ? SafeRawMaximum() : 20);
+            if (active.enabled.Value) RestoreMmoAddonPriorities(__instance, sliders);
+            else ApplyMmoAddonPriorities(__instance);
         }
 
         private static int[] ReadSafePriorities(gameScript game)
         {
-            int rawMax = active.maximum.Value / 5;
+            int rawMax = SafeRawMaximum();
             if (game == null) return new[] { 5, 5, 5, 5 };
             return new[]
             {
@@ -324,8 +352,17 @@ namespace CharacterEditorDeluxe
         private static void RestoreAddonPriorities(Menu_Dev_AddonDo source, Slider[] sliders)
         {
             if (sliders == null) return;
-            SetSliderMaximum(sliders, active.maximum.Value / 5);
+            ClampStoredPriorities(source.gS_);
+            SetSliderMaximum(sliders, SafeRawMaximum());
             SetSliderValues(sliders, ReadSafePriorities(source.gS_));
+            source.SetAP_Gameplay();
+            source.SetAP_Grafik();
+            source.SetAP_Sound();
+            source.SetAP_Technik();
+        }
+
+        private static void ApplyAddonPriorities(Menu_Dev_AddonDo source)
+        {
             source.SetAP_Gameplay();
             source.SetAP_Grafik();
             source.SetAP_Sound();
@@ -335,8 +372,17 @@ namespace CharacterEditorDeluxe
         private static void RestoreMmoAddonPriorities(Menu_Dev_MMOAddon source, Slider[] sliders)
         {
             if (sliders == null) return;
-            SetSliderMaximum(sliders, active.maximum.Value / 5);
+            ClampStoredPriorities(source.gS_);
+            SetSliderMaximum(sliders, SafeRawMaximum());
             SetSliderValues(sliders, ReadSafePriorities(source.gS_));
+            source.SetAP_Gameplay();
+            source.SetAP_Grafik();
+            source.SetAP_Sound();
+            source.SetAP_Technik();
+        }
+
+        private static void ApplyMmoAddonPriorities(Menu_Dev_MMOAddon source)
+        {
             source.SetAP_Gameplay();
             source.SetAP_Grafik();
             source.SetAP_Sound();
@@ -347,26 +393,18 @@ namespace CharacterEditorDeluxe
         {
             if (source == null || !source.isActiveAndEnabled) return;
             Slider[] sliders = GetAddonSliders(source);
+            if (sliders == null) return;
             SetSliderMaximum(sliders, rawMax);
-            if (!restoreVanilla) return;
-            SetSliderValues(sliders, new[] { 5, 5, 5, 5 });
-            source.SetAP_Gameplay();
-            source.SetAP_Grafik();
-            source.SetAP_Sound();
-            source.SetAP_Technik();
+            if (restoreVanilla) ApplyAddonPriorities(source);
         }
 
         private static void UpdateMmoAddonMenu(Menu_Dev_MMOAddon source, int rawMax, bool restoreVanilla)
         {
             if (source == null || !source.isActiveAndEnabled) return;
             Slider[] sliders = GetMmoAddonSliders(source);
+            if (sliders == null) return;
             SetSliderMaximum(sliders, rawMax);
-            if (!restoreVanilla) return;
-            SetSliderValues(sliders, new[] { 5, 5, 5, 5 });
-            source.SetAP_Gameplay();
-            source.SetAP_Grafik();
-            source.SetAP_Sound();
-            source.SetAP_Technik();
+            if (restoreVanilla) ApplyMmoAddonPriorities(source);
         }
 
         private static void AfterMenuClosed(Menu_DevGame __instance)
@@ -382,37 +420,47 @@ namespace CharacterEditorDeluxe
         {
             if (active == null || __instance == null) return;
             active.menu = __instance;
-            if (!active.enabled.Value) return;
-            SetSliderMaximum(GetSliders(__instance), active.maximum.Value / 5);
+            Slider[] sliders = GetSliders(__instance);
+            SetSliderMaximum(sliders, active.enabled.Value ? SafeRawMaximum() : 20);
+            if (!active.enabled.Value && sliders != null)
+            {
+                __instance.SetAP_Gameplay();
+                __instance.SetAP_Grafik();
+                __instance.SetAP_Sound();
+                __instance.SetAP_Technik();
+            }
         }
 
         private static void AfterPlayerInitialized(mainScript __instance)
         {
             if (active == null || __instance == null) return;
-            active.SetPlayer(__instance);
+            active.loggedPriorityClampGames.Clear();
             Plugin.SetGame(__instance);
+            Plugin.ResetEmployeeTracking();
         }
 
         private static void AfterGameLoaded()
         {
             if (active == null) return;
-            mainScript player = Plugin.CurrentGame;
-            if (player == null) player = UnityEngine.Object.FindObjectOfType<mainScript>();
+            mainScript player = UnityEngine.Object.FindObjectOfType<mainScript>();
             if (player == null) return;
-            active.SetPlayer(player);
+            active.loggedPriorityClampGames.Clear();
             Plugin.SetGame(player);
+            Plugin.ResetEmployeeTracking();
+            ClampStoredPrioritiesOnPersistence();
         }
 
         private static void AfterNewGameMenuOpened(Menu_DevGame __instance)
         {
             if (active == null || __instance == null) return;
             active.menu = __instance;
-            if (!active.enabled.Value) return;
             for (int i = 0; i < active.priorityInputs.Length; i++) active.priorityInputs[i] = null;
+            Slider[] sliders = GetSliders(__instance);
+            SetSliderMaximum(sliders, active.enabled.Value ? SafeRawMaximum() : 20);
+            if (!active.enabled.Value) return;
             if (active.rememberedPriorities == null) return;
-            var sliders = GetSliders(__instance);
             if (sliders == null) return;
-            int rawMax = active.maximum.Value / 5;
+            int rawMax = SafeRawMaximum();
             for (int i = 0; i < sliders.Length; i++)
             {
                 sliders[i].maxValue = rawMax;
@@ -477,40 +525,38 @@ namespace CharacterEditorDeluxe
             return list;
         }
 
-        private struct WorkSample
+        private static void BeforeWork(taskGame __instance, ref float __0, int __1)
         {
-            internal gameScript Game;
-            internal int Category;
-            internal float Before;
-            internal float Original;
-            internal float Effective;
-        }
-
-        private static void BeforeWork(taskGame __instance, ref float __0, int __1, out WorkSample __state)
-        {
-            __state = default;
-            if (active == null || __1 < 0 || __1 > 3 || __instance == null) return;
+            if (active == null || !active.enabled.Value || __1 < 0 || __1 > 3 || __instance == null) return;
             gameScript game = __instance.gS_;
             // ownerID may be the external publisher; developerID identifies the studio doing the work.
             if (game == null || active.player == null || game.developerID != active.player.myID) return;
-            if (!active.enabled.Value) return;
             int raw = ClampStoredPriority(game, __1);
             float original = __0;
             float before = ReadPoints(game, __1);
             if (raw <= 20) return;
             if (float.IsNaN(original) || float.IsInfinity(original) || float.IsNaN(before) || float.IsInfinity(before))
             {
-                active.log.LogWarning("Priority work skipped non-finite source value for game=" + game.myID + " category=" + __1);
+                if (MarkWorkWarning(__1))
+                    active.log.LogWarning("Priority work skipped non-finite source value for game=" + game.myID + " category=" + __1);
                 return;
             }
             double boosted = (double)original * raw / 20d;
             if (double.IsNaN(boosted) || double.IsInfinity(boosted) || boosted > (double)float.MaxValue - before || boosted < -(double)float.MaxValue - before)
             {
-                active.log.LogWarning("Priority work skipped unsafe production value for game=" + game.myID + " category=" + __1);
+                if (MarkWorkWarning(__1))
+                    active.log.LogWarning("Priority work skipped unsafe production value for game=" + game.myID + " category=" + __1);
                 return;
             }
             __0 = (float)boosted;
-            __state = new WorkSample { Game = game, Category = __1, Before = before, Original = original, Effective = __0 };
+        }
+
+        private static bool MarkWorkWarning(int category)
+        {
+            int bit = 1 << category;
+            if ((active.loggedWorkWarnings & bit) != 0) return false;
+            active.loggedWorkWarnings |= bit;
+            return true;
         }
 
         private static float ReadPoints(gameScript game, int category)
@@ -520,20 +566,18 @@ namespace CharacterEditorDeluxe
 
         private static void AfterSaveGames() { ClampStoredPrioritiesOnPersistence(); }
 
-        private static void AfterLoadGames() { ClampStoredPrioritiesOnPersistence(); }
-
         private static void ClampStoredPrioritiesOnPersistence()
         {
-            if (active == null || active.player == null) return;
+            if (active == null || !active.enabled.Value || active.player == null) return;
             foreach (gameScript game in UnityEngine.Object.FindObjectsOfType<gameScript>())
-                if (game != null && game.developerID == active.player.myID && active.enabled.Value)
+                if (game != null && game.developerID == active.player.myID)
                     ClampStoredPriorities(game);
         }
 
         private static int ClampStoredPriority(gameScript game, int category)
         {
             int raw = category == 0 ? game.gameAP_Gameplay : category == 1 ? game.gameAP_Grafik : category == 2 ? game.gameAP_Sound : game.gameAP_Technik;
-            int safe = Mathf.Clamp(raw, 0, active.maximum.Value / 5);
+            int safe = Mathf.Clamp(raw, 0, SafeRawMaximum());
             if (safe != raw)
             {
                 if (category == 0) game.gameAP_Gameplay = safe;
@@ -547,7 +591,49 @@ namespace CharacterEditorDeluxe
 
         private static void ClampStoredPriorities(gameScript game)
         {
-            for (int category = 0; category < 4; category++) ClampStoredPriority(game, category);
+            if (active == null || game == null) return;
+            int rawMaximum = active.enabled.Value ? SafeRawMaximum() : 20;
+            int[] priorities =
+            {
+                Mathf.Clamp(game.gameAP_Gameplay, 0, rawMaximum),
+                Mathf.Clamp(game.gameAP_Grafik, 0, rawMaximum),
+                Mathf.Clamp(game.gameAP_Sound, 0, rawMaximum),
+                Mathf.Clamp(game.gameAP_Technik, 0, rawMaximum)
+            };
+            int total = priorities[0] + priorities[1] + priorities[2] + priorities[3];
+            int totalMaximum = active.enabled.Value && active.allowOver100.Value ? rawMaximum * 4 : 20;
+            if (total > totalMaximum)
+            {
+                int assigned = 0;
+                double[] remainders = new double[priorities.Length];
+                for (int i = 0; i < priorities.Length; i++)
+                {
+                    double scaled = (double)priorities[i] * totalMaximum / total;
+                    priorities[i] = (int)Math.Floor(scaled);
+                    remainders[i] = scaled - priorities[i];
+                    assigned += priorities[i];
+                }
+                while (assigned < totalMaximum)
+                {
+                    int best = 0;
+                    for (int i = 1; i < remainders.Length; i++)
+                        if (remainders[i] > remainders[best]) best = i;
+                    priorities[best]++;
+                    remainders[best] = -1d;
+                    assigned++;
+                }
+            }
+            for (int category = 0; category < priorities.Length; category++)
+            {
+                int old = category == 0 ? game.gameAP_Gameplay : category == 1 ? game.gameAP_Grafik : category == 2 ? game.gameAP_Sound : game.gameAP_Technik;
+                if (old == priorities[category]) continue;
+                if (category == 0) game.gameAP_Gameplay = priorities[category];
+                else if (category == 1) game.gameAP_Grafik = priorities[category];
+                else if (category == 2) game.gameAP_Sound = priorities[category];
+                else game.gameAP_Technik = priorities[category];
+                if (active.loggedPriorityClampGames.Add(game.myID))
+                    active.log.LogWarning("Clamped unsafe stored design priorities for game=" + game.myID + " to the configured safe limits.");
+            }
         }
     }
 }

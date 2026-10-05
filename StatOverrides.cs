@@ -70,14 +70,6 @@ namespace CharacterEditorDeluxe
             harmony.Patch(method, before, after);
         }
 
-        internal void SetStatsLock(characterScript character, bool value)
-        {
-            if (character == null) return;
-            Record record = GetOrCreate(character);
-            if (value) CaptureSkills(record, character);
-            record.LockStats = value;
-        }
-
         internal void SetMotivationLock(characterScript character, bool value)
         {
             if (character == null) return;
@@ -86,9 +78,21 @@ namespace CharacterEditorDeluxe
             record.LockMotivation = value;
         }
 
+        internal bool IsMotivationLocked(characterScript character)
+        {
+            Record record;
+            return character != null && records.TryGetValue(character, out record) && record.LockMotivation;
+        }
+
         internal void RestoreAllLocked()
         {
             foreach (var entry in records) RestoreLocked(entry.Key);
+        }
+
+        internal void ClearLocks()
+        {
+            records.Clear();
+            pendingLoaded = null;
         }
 
         internal void RecordApplied(characterScript character, bool skillsChanged, bool motivationChanged)
@@ -140,7 +144,9 @@ namespace CharacterEditorDeluxe
         private void RestoreLocked(characterScript character)
         {
             Record record;
-            if (character == null || !records.TryGetValue(character, out record)) return;
+            if (records.Count == 0 || character == null || !records.TryGetValue(character, out record) ||
+                character.myID != record.Id ||
+                !string.Equals(character.myName ?? "", record.Name, StringComparison.Ordinal)) return;
             if (GlobalLock.Value && record.LockStats) RestoreSkills(record, character);
             if (record.LockMotivation) character.s_motivation = SafeStat(record.Motivation);
         }
@@ -152,9 +158,11 @@ namespace CharacterEditorDeluxe
 
         private static bool BeforeAddMotivation(characterScript __instance)
         {
-            if (active == null) return true;
+            if (active == null || active.records.Count == 0) return true;
             Record record;
-            if (__instance == null || !active.records.TryGetValue(__instance, out record) || !record.LockMotivation) return true;
+            if (__instance == null || !active.records.TryGetValue(__instance, out record) || !record.LockMotivation ||
+                __instance.myID != record.Id ||
+                !string.Equals(__instance.myName ?? "", record.Name, StringComparison.Ordinal)) return true;
             __instance.s_motivation = record.Motivation;
             return false;
         }
@@ -192,7 +200,26 @@ namespace CharacterEditorDeluxe
         private static void BeforeSaveEmployees()
         {
             if (active == null) return;
-            foreach (var entry in active.records) active.RestoreLocked(entry.Key);
+            if (active.records.Count == 0) return;
+            mainScript game = Plugin.CurrentGame;
+            HashSet<characterScript> currentEmployees = null;
+            if (game != null && game.arrayCharactersScripts != null)
+                currentEmployees = new HashSet<characterScript>(game.arrayCharactersScripts);
+            var stale = new List<characterScript>();
+            foreach (var entry in active.records)
+            {
+                characterScript character = entry.Key;
+                Record record = entry.Value;
+                if (character == null || record == null || character.myID != record.Id ||
+                    !string.Equals(character.myName ?? "", record.Name, StringComparison.Ordinal) ||
+                    currentEmployees != null && !currentEmployees.Contains(character))
+                {
+                    stale.Add(character);
+                    continue;
+                }
+                active.RestoreLocked(character);
+            }
+            foreach (characterScript character in stale) active.records.Remove(character);
         }
 
         private static void AfterSaveEmployees(ES3Writer writer)
@@ -217,7 +244,8 @@ namespace CharacterEditorDeluxe
         {
             var live = new List<KeyValuePair<characterScript, Record>>();
             foreach (var entry in records)
-                if (entry.Key != null && entry.Value != null && entry.Key.myID == entry.Value.Id)
+                if (entry.Key != null && entry.Value != null && entry.Key.myID == entry.Value.Id &&
+                    string.Equals(entry.Key.myName ?? "", entry.Value.Name, StringComparison.Ordinal))
                     live.Add(entry);
             using (var stream = new MemoryStream())
             using (var writer = new BinaryWriter(stream))
@@ -240,7 +268,11 @@ namespace CharacterEditorDeluxe
 
         private void Deserialize(string data)
         {
-            if (string.IsNullOrEmpty(data)) return;
+            if (string.IsNullOrEmpty(data))
+            {
+                pendingLoaded = new Dictionary<int, Record>();
+                return;
+            }
             byte[] bytes = Convert.FromBase64String(data);
             if (bytes.Length > 1024 * 1024) throw new InvalidDataException("Character lock data is too large.");
             var saved = new Dictionary<int, Record>();
@@ -269,7 +301,8 @@ namespace CharacterEditorDeluxe
         private void AttachLoaded()
         {
             if (pendingLoaded == null) return;
-            mainScript game = UnityEngine.Object.FindObjectOfType<mainScript>();
+            mainScript game = Plugin.CurrentGame;
+            if (game == null) game = UnityEngine.Object.FindObjectOfType<mainScript>();
             if (game == null || game.arrayCharactersScripts == null) return;
             foreach (characterScript character in game.arrayCharactersScripts)
             {
