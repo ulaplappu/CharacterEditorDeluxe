@@ -1,35 +1,56 @@
 # Character Editor Deluxe
 
-Version 1.0.7
+Version 1.1.0
 
-An unofficial BepInEx plugin for editing employees and safe development options in Mad Games Tycoon 2.
+An unofficial BepInEx plugin for editing employees and configuring gameplay options in Mad Games Tycoon 2.
 
 ## Features
 
-- Edit employee stats and motivation on the game's 0–100 scale, with optional stat and motivation locks.
-- Apply positive-only perks to one employee or in bulk. Neutral perks (CEO, Loyal, Nature Lover, Modest) and negative perks (Greedy, Unfocused, Untalented, Immunocompromised, Unlucky, Messy, Stress-Averse) remain manual-only.
-- Bulk-edit employees and optionally auto-max new hires.
-- Extend Design / Work Priority up to 200% per category for normal games, sequels, spinoffs, remasters, ports, contracts, Paid Addons, and MMO Addons.
-- Set Game Update content contribution up to the safe 100% maximum.
-- Protect modified values from invalid numeric input and overflow.
+- Edit employee motivation and eight skills; optionally lock edited values.
+- Apply perks separately from employee stat edits, including positive-only perk application.
+- Apply edits to one employee or in bulk, and optionally auto-max newly hired employees.
+- Configure Design / Work Priority and Game Update content contributions within the safe limits below.
 
-## Version 1.0.7 fixes
+## Employee Stats
 
-- Disabled Extended Design / Work Priority no longer clamps stored game priorities during load or persistence.
-- Repeated stored-priority clamp warnings are limited to avoid per-game log spam.
-- The prior nonexistent priority-menu lifecycle probe was removed to avoid a startup warning.
+- The eight editable employee skills support values from 0 to 1000 (the configured skill cap defaults to 1000). Motivation remains limited to 0–100.
+- Skills are written to the real `characterScript` `float` fields; the UI displays those live field values.
+- Player employees use the configured extended cap for skill learning and training. NPC and rival employees retain vanilla skill caps.
+- Stat locks keep the edited skill values stable and save their float snapshots in the mod's save sidecar. Values above 100 are representable in the sidecar.
+- Auto-Max assigns the configured extended skill maximum to new employees.
+- Stat-only edits do not alter perks; perk edits use a separate apply path.
+- Skills above 100 exceed vanilla balance. Their supported range does not imply that every downstream gameplay outcome has been exhaustively tested.
+
+## Perks
+
+Perks can be edited independently of employee stats. Positive-only actions leave the existing negative and neutral classification unchanged; those perks can be managed manually.
+
+## Design / Work Priority
+
+Optional extended Design / Work Priority supports up to 200% per category. The normal limit is used when the option is disabled. The implementation covers normal games and the supported sequel, spinoff, remaster, port, contract, Paid Addon, and MMO Addon paths.
+
+## Game Updates
+
+Game Update content contribution can be configured up to 100%. Vanilla calculations remain active when this option is disabled.
 
 ## Performance
 
-The priority updater no longer performs recurring `FindObjectOfType` scene searches; it uses lifecycle hooks and cached menu references. Profiling of that updater measured a reduction from approximately 65 ms spikes to approximately 0.001–0.002 ms per steady-state call.
+Employee-list polling is conditional on the editor being open or Auto-Max being enabled; priority-menu updates are handled only when needed. The editor does not force employee stats every frame. Performance depends on the game and other installed plugins; this project does not claim an exhaustive whole-game profiling result.
 
-The mod also reduces unnecessary polling while the editor is closed, repeated refresh work, temporary allocations, and repetitive safety-cap logs. These are mod-specific measurements and code-path changes; they do not establish a full-game FPS improvement. Results vary with the game and other installed plugins.
+## Safe Limits
+
+- Skills: 0–1000.
+- Motivation: 0–100.
+- Design / Work Priority: 0–200% per category.
+- Game Update Content: 0–100%.
+
+Non-finite or unsafe values are validated or clamped before the mod applies them. **Reset cheats to vanilla** disables optional cheats, returns employee skills to vanilla-compatible values, and clears employee lock records.
 
 ## Requirements
 
 - Mad Games Tycoon 2.
 - BepInEx 5 installed for the game.
-- For building: .NET SDK with .NET Standard 2.1 support and the game-managed assemblies from your own installation.
+- For building: .NET SDK with .NET Standard 2.1 support and game-managed assemblies from your own installation.
 
 ## Installation
 
@@ -40,22 +61,7 @@ The mod also reduces unnecessary polling while the editor is closed, repeated re
 
 ## Controls
 
-Press **F8** to open or close the editor. Select an employee with the navigation arrows, stage changes, then apply them to the selected employee or all employees. The Employees tab includes per-employee motivation locks and the global stat-lock option; other tabs contain perk, priority, update-content, and safety settings.
-
-## Safe limits
-
-- Employee stats and motivation: 0–100.
-- Extended Design / Work Priority: at most 200% per category.
-- Game Update content: at most 100%.
-- Non-finite and unsafe values are rejected or clamped before modified values reach game calculations.
-- Disabling an optional feature restores vanilla calculations for future actions; values already saved remain in the save.
-- **Reset cheats to vanilla** also clears employee lock records.
-
-## Compatibility
-
-The mod targets Mad Games Tycoon 2 with BepInEx 5. Extended priority hooks support the game and addon types listed above. Other plugins may patch the same game methods; compatibility with every mod combination is not guaranteed.
-
-This repository does not include game files, Unity assemblies, BepInEx binaries, saves, logs, or third-party mods.
+Press **F8** to open or close the editor. Select an employee with the navigation arrows, stage changes, then apply them to the selected employee or all employees. The Employees tab contains stat and motivation locks; the other tabs contain perk, priority, update-content, and safety settings.
 
 ## Build
 
@@ -67,6 +73,10 @@ dotnet build .\CharacterEditorDeluxe.csproj -c Release
 ```
 
 The build output is `bin\Release\netstandard2.1\CharacterEditorDeluxe.dll`. The synchronized release artifact is `Release\CharacterEditorDeluxe.dll`.
+
+## Compatibility
+
+The mod targets Mad Games Tycoon 2 with BepInEx 5. Other plugins may patch the same game methods; compatibility with every plugin combination is not guaranteed. This repository does not include game files, Unity assemblies, BepInEx binaries, saves, logs, or third-party mods.
 
 ## Disclaimer
 

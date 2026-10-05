@@ -9,7 +9,7 @@ using UnityEngine;
 
 namespace CharacterEditorDeluxe
 {
-    [BepInPlugin("com.codex.mgt2.charactereditordeluxe", "MGT2 Character Editor Deluxe", "1.0.7")]
+    [BepInPlugin("com.codex.mgt2.charactereditordeluxe", "MGT2 Character Editor Deluxe", "1.1.0")]
     public sealed class Plugin : BaseUnityPlugin
     {
         private static Plugin activePlugin;
@@ -44,6 +44,7 @@ namespace CharacterEditorDeluxe
         private float nextStatsRefresh;
         private characterScript selected;
         private readonly float[] stagedStats = new float[9];
+        private readonly float[] currentStats = new float[9];
         private readonly bool[] statDirty = new bool[9];
         private readonly string[] statInputs = new string[9];
         private bool[] stagedPerks = new bool[0];
@@ -91,22 +92,31 @@ namespace CharacterEditorDeluxe
         private const float DefaultWindowHeight = 700f;
         private const float TitleBarHeight = 24f;
         private const float ResizeGripSize = 20f;
+        private const int VanillaSkillCap = 100;
+        private const int MaximumSkillCap = 1000;
+        private const int MotivationCap = 100;
 
         private void Awake()
         {
             activePlugin = this;
             autoMaxNewEmployees = Config.Bind("General", "AutoMaxNewEmployees", false, "Automatically max newly added employees after initialization.");
-            configuredCap = Config.Bind("Stats", "StatCap", 100, "Safe maximum stat value (0 to 100). MGT2's native scale is 0 to 100.");
+            configuredCap = Config.Bind("Stats", "StatCap", MaximumSkillCap, "Safe maximum employee skill value (1 to 1000). Motivation remains capped at 100.");
+            ConfigEntry<int> statCapMigration = Config.Bind("Stats", "StatCapMigrationVersion", 0, "Internal migration version for the employee skill cap.");
+            if (statCapMigration.Value < 1)
+            {
+                if (configuredCap.Value == VanillaSkillCap) configuredCap.Value = MaximumSkillCap;
+                statCapMigration.Value = 1;
+            }
             var globalLock = Config.Bind("Locks", "LockEditedStats", true, "Keep edited skills at their assigned values during work, training and save/load.");
             savedWindowX = Config.Bind("Window", "X", 30f, "Saved editor window X position.");
             savedWindowY = Config.Bind("Window", "Y", 30f, "Saved editor window Y position.");
             savedWindowWidth = Config.Bind("Window", "Width", DefaultWindowWidth, "Saved editor window width.");
             savedWindowHeight = Config.Bind("Window", "Height", DefaultWindowHeight, "Saved editor window height.");
-            cap = Mathf.Clamp(configuredCap.Value, 1, 100);
+            cap = Mathf.Clamp(configuredCap.Value, 1, MaximumSkillCap);
             configuredCap.Value = cap;
             windowRect = new Rect(savedWindowX.Value, savedWindowY.Value, savedWindowWidth.Value, savedWindowHeight.Value);
             ClampWindowToScreen();
-            overrides = new StatOverrides(Logger, globalLock);
+            overrides = new StatOverrides(Logger, globalLock, () => cap);
             overrides.Install();
             designPriorities = new DesignPriorityOverrides(Logger,
                 Config.Bind("Design Priority", "ExtendedDesignPriority", false, "Enable Extended Design Priority up to the safe 200% per-category limit."),
@@ -127,6 +137,7 @@ namespace CharacterEditorDeluxe
         {
             if (activePlugin == null || source == null) return;
             activePlugin.game = source;
+            if (activePlugin.overrides != null) activePlugin.overrides.SetPlayer(source);
             if (activePlugin.designPriorities != null) activePlugin.designPriorities.SetPlayer(source);
             if (activePlugin.updateContent != null) activePlugin.updateContent.SetPlayer(source);
         }
@@ -208,7 +219,7 @@ namespace CharacterEditorDeluxe
             GUILayout.Label("F8", GUILayout.Width(28));
             if (GUILayout.Button("Close", GUILayout.Width(60))) SetVisible(false);
             GUILayout.EndHorizontal();
-            GUILayout.Label("Safe limits are enforced before values reach MGT2. Current stat cap: " + cap + "/100.");
+            GUILayout.Label("Skill cap: " + cap + "; motivation cap: " + MotivationCap + ".");
             activeTab = GUILayout.SelectionGrid(activeTab, Tabs, 3, GUILayout.Height(52));
             scroll = GUILayout.BeginScrollView(scroll, GUILayout.ExpandHeight(true));
             if (activeTab == 0) DrawEmployeesTab();
@@ -230,25 +241,41 @@ namespace CharacterEditorDeluxe
             bool nextMotivationLocked = GUILayout.Toggle(motivationLocked, "Lock selected employee's motivation");
             if (nextMotivationLocked != motivationLocked)
                 overrides.SetMotivationLock(selected, nextMotivationLocked);
+            bool statsLocked = overrides.IsStatsLocked(selected);
+            bool nextStatsLocked = GUILayout.Toggle(statsLocked, "Lock selected employee's skills");
+            if (nextStatsLocked != statsLocked)
+                overrides.SetStatsLock(selected, nextStatsLocked);
             RefreshCurrentStats();
             GUILayout.BeginVertical("box");
-            GUILayout.Label("STATS  (safe range 0-" + cap + ")", GUI.skin.GetStyle("boldlabel"));
+            GUILayout.Label("STATS RANGE: Skills 0-" + cap + "; Motivation 0-" + MotivationCap, GUI.skin.GetStyle("boldlabel"));
+            GUILayout.Label("Extended skills above 100 exceed vanilla balance but are protected by mod safety logic.");
             for (int i = 0; i < StatFields.Length; i++)
             {
                 GUILayout.BeginHorizontal();
                 GUILayout.Label(StatLabels[i], GUILayout.Width(120));
-                float sliderValue = Mathf.Clamp(stagedStats[i], 0f, cap);
-                float val = GUILayout.HorizontalSlider(sliderValue, 0f, cap, GUILayout.ExpandWidth(true));
+                int statCap = GetStatCap(i);
+                float sliderValue = Mathf.Clamp(stagedStats[i], 0f, statCap);
+                float val = GUILayout.HorizontalSlider(sliderValue, 0f, statCap, GUILayout.ExpandWidth(true));
                 if (Math.Abs(val - sliderValue) > 0.01f) SetStagedStat(i, Mathf.Round(val));
                 string typed = GUILayout.TextField(statInputs[i], GUILayout.Width(62));
                 if (typed != statInputs[i]) SetTypedStat(i, typed);
-                GUILayout.Label("/" + cap, GUILayout.Width(35));
+                GUILayout.Label("/" + statCap, GUILayout.Width(35));
+                GUILayout.Label("Current: " + currentStats[i].ToString("0.##", CultureInfo.InvariantCulture), GUILayout.Width(112));
                 GUILayout.EndHorizontal();
             }
             GUILayout.EndVertical();
             GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Max Selected", GUILayout.Height(30)))
+            {
+                for (int i = 1; i < StatFields.Length; i++) SetStagedStat(i, cap);
+                Apply(employees, false);
+            }
             if (GUILayout.Button("Apply selected", GUILayout.Height(30))) Apply(employees, false);
-            if (GUILayout.Button("Apply all employees", GUILayout.Height(30))) Apply(employees, true);
+            if (GUILayout.Button("Apply All", GUILayout.Height(30))) Apply(employees, true);
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Reset Selected", GUILayout.Height(28))) ResetEmployees(employees, false);
+            if (GUILayout.Button("Reset All", GUILayout.Height(28))) ResetEmployees(employees, true);
             GUILayout.EndHorizontal();
         }
 
@@ -276,8 +303,8 @@ namespace CharacterEditorDeluxe
             GUILayout.EndHorizontal();
             GUILayout.EndVertical();
             GUILayout.BeginHorizontal();
-            if (GUILayout.Button("Apply selected", GUILayout.Height(30))) Apply(employees, false);
-            if (GUILayout.Button("Apply all employees", GUILayout.Height(30))) Apply(employees, true);
+            if (GUILayout.Button("Apply selected", GUILayout.Height(30))) ApplyPerks(employees, false);
+            if (GUILayout.Button("Apply all employees", GUILayout.Height(30))) ApplyPerks(employees, true);
             GUILayout.EndHorizontal();
         }
 
@@ -412,8 +439,36 @@ namespace CharacterEditorDeluxe
                 if (!all && character != selected) continue;
                 if (WritePositivePerks(character)) applied++;
             }
-            if (selected != null) LoadSelection(selected);
+            if (selected != null) LoadStagedPerks(selected);
             status = "Applied official positive perks to " + applied + " employee(s). Neutral, negative, and unresolved perks were disabled.";
+        }
+
+        private void ApplyPerks(List<characterScript> employees, bool all)
+        {
+            if (!perksDirty)
+            {
+                status = "No staged perk changes to apply.";
+                return;
+            }
+
+            int applied = 0;
+            foreach (characterScript character in employees)
+            {
+                if (!all && character != selected) continue;
+                if (character == null) continue;
+                int length = stagedPerks == null ? 0 : stagedPerks.Length;
+                if (character.perks == null || character.perks.Length != length)
+                {
+                    bool[] current = character.perks;
+                    character.perks = new bool[length];
+                    if (current != null) Array.Copy(current, character.perks, Math.Min(current.Length, length));
+                }
+                Array.Copy(stagedPerks, character.perks, length);
+                applied++;
+            }
+            perksDirty = false;
+            if (selected != null) LoadStagedPerks(selected);
+            status = "Applied staged perks to " + applied + " employee(s); employee skills and motivation were unchanged.";
         }
 
         private void DrawGameUpdatesTab()
@@ -439,10 +494,18 @@ namespace CharacterEditorDeluxe
             GUILayout.Label("Stat cap", GUILayout.Width(70));
             string capText = GUILayout.TextField(cap.ToString(CultureInfo.InvariantCulture), GUILayout.Width(62));
             int parsed;
-            if (int.TryParse(capText, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed)) cap = Mathf.Clamp(parsed, 1, 100);
+            if (int.TryParse(capText, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed))
+            {
+                int nextCap = Mathf.Clamp(parsed, 1, MaximumSkillCap);
+                if (nextCap != cap)
+                {
+                    cap = nextCap;
+                    overrides.RefreshTrainingTargets();
+                }
+            }
             configuredCap.Value = cap;
             if (GUILayout.Button("Reset cheats to vanilla")) ResetToVanilla();
-            GUILayout.Label("Version 1.0.7 | F8 toggles this window | window position and size are saved.");
+            GUILayout.Label("Version 1.1.0 | F8 toggles this window | window position and size are saved.");
             GUILayout.EndVertical();
         }
 
@@ -450,12 +513,13 @@ namespace CharacterEditorDeluxe
         {
             statInputs[index] = typed;
             float n;
+            int statCap = GetStatCap(index);
             if (float.TryParse(typed, NumberStyles.Float, CultureInfo.InvariantCulture, out n) && !float.IsNaN(n) && !float.IsInfinity(n))
             {
-                stagedStats[index] = Mathf.Clamp(n, 0f, cap);
+                stagedStats[index] = Mathf.Clamp(n, 0f, statCap);
                 statDirty[index] = true;
             }
-            else status = "Enter a finite number between 0 and " + cap + ".";
+            else status = "Enter a finite number between 0 and " + statCap + ".";
         }
 
         private void ResetToVanilla()
@@ -465,8 +529,10 @@ namespace CharacterEditorDeluxe
             overrides.ClearLocks();
             designPriorities.ResetToVanilla();
             updateContent.ResetToVanilla();
-            cap = 100;
+            cap = VanillaSkillCap;
             configuredCap.Value = cap;
+            overrides.RefreshTrainingTargets();
+            ResetAllEmployeesToVanilla();
             status = "Cheats disabled; vanilla calculations restored for future actions.";
         }
 
@@ -627,14 +693,28 @@ namespace CharacterEditorDeluxe
         {
             selected = character;
             if (selected == null) return;
+            LoadStagedStats(selected);
+            LoadStagedPerks(selected);
+            status = "Staged changes are not written until an Apply button is used.";
+        }
+
+        private void LoadStagedStats(characterScript character)
+        {
+            if (character == null) return;
             for (int i = 0; i < StatFields.Length; i++)
             {
-                float value = ReadStat(selected, i);
-                stagedStats[i] = ClampStatValue(value);
+                float value = ReadStat(character, i);
+                currentStats[i] = NormalizeDisplayedStat(value, i);
+                stagedStats[i] = NormalizeDisplayedStat(value, i);
                 statInputs[i] = stagedStats[i].ToString("0.##", CultureInfo.InvariantCulture);
                 statDirty[i] = false;
             }
-            var source = selected.perks ?? new bool[0];
+        }
+
+        private void LoadStagedPerks(characterScript character)
+        {
+            if (character == null) return;
+            var source = character.perks ?? new bool[0];
             int perkCount = source.Length;
             try
             {
@@ -651,14 +731,24 @@ namespace CharacterEditorDeluxe
             stagedPerks = new bool[perkCount];
             Array.Copy(source, stagedPerks, source.Length);
             perksDirty = false;
-            status = "Staged changes are not written until an Apply button is used.";
         }
 
         private void SetStagedStat(int index, float value)
         {
-            stagedStats[index] = Mathf.Clamp(value, 0f, cap);
+            stagedStats[index] = Mathf.Clamp(value, 0f, GetStatCap(index));
             statInputs[index] = stagedStats[index].ToString("0.##", CultureInfo.InvariantCulture);
             statDirty[index] = true;
+        }
+
+        private int GetStatCap(int index)
+        {
+            return index == 0 ? MotivationCap : cap;
+        }
+
+        private float NormalizeDisplayedStat(float value, int index)
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value)) return 0f;
+            return Mathf.Clamp(value, 0f, index == 0 ? MotivationCap : MaximumSkillCap);
         }
 
         private static float ReadStat(characterScript character, int index)
@@ -672,17 +762,25 @@ namespace CharacterEditorDeluxe
             nextStatsRefresh = Time.unscaledTime + 1f;
             for (int i = 0; i < stagedStats.Length; i++)
             {
-                if (statDirty[i]) continue;
                 float value = ReadStat(selected, i);
                 if (float.IsNaN(value) || float.IsInfinity(value)) continue;
-                stagedStats[i] = ClampStatValue(value, false);
-                statInputs[i] = stagedStats[i].ToString("0.##", CultureInfo.InvariantCulture);
+                currentStats[i] = NormalizeDisplayedStat(value, i);
+                if (statDirty[i]) continue;
+                stagedStats[i] = currentStats[i];
+                statInputs[i] = currentStats[i].ToString("0.##", CultureInfo.InvariantCulture);
             }
         }
 
         private void Apply(List<characterScript> employees, bool all)
         {
             if (!CommitValidStatInputs()) return;
+            bool hasChanges = false;
+            for (int i = 0; i < statDirty.Length; i++) hasChanges |= statDirty[i];
+            if (!hasChanges)
+            {
+                status = "No staged stat changes to apply.";
+                return;
+            }
             int applied = 0;
             bool skillsChanged = false;
             for (int i = 1; i < statDirty.Length; i++) skillsChanged |= statDirty[i];
@@ -692,34 +790,29 @@ namespace CharacterEditorDeluxe
                 try
                 {
                     for (int i = 0; i < StatFields.Length; i++)
-                        if (statDirty[i] || all && i > 0 && skillsChanged)
-                            StatMembers[i].SetValue(character, ClampStatValue(stagedStats[i]));
+                        if (statDirty[i])
+                            StatMembers[i].SetValue(character, ClampStatValue(stagedStats[i], i));
                     overrides.RecordApplied(character, skillsChanged, statDirty[0]);
-                    if (perksDirty)
-                    {
-                        if (character.perks == null || character.perks.Length != stagedPerks.Length)
-                            character.perks = new bool[stagedPerks.Length];
-                        Array.Copy(stagedPerks, character.perks, stagedPerks.Length);
-                    }
                     applied++;
                 }
                 catch (Exception ex) { Logger.LogWarning("Skipped an invalid employee record: " + ex.Message); }
             }
-            if (selected != null) LoadSelection(selected);
+            if (selected != null) LoadStagedStats(selected);
             status = "Applied to " + applied + " employee(s). Save the game to persist locked values.";
         }
 
-        private float ClampStatValue(float value, bool warn = true)
+        private float ClampStatValue(float value, int index, bool warn = true)
         {
+            int statCap = GetStatCap(index);
             if (float.IsNaN(value) || float.IsInfinity(value))
             {
                 if (warn) Logger.LogWarning("Reset non-finite employee stat to 0.");
                 return 0f;
             }
-            if (value < 0f || value > cap)
+            if (value < 0f || value > statCap)
             {
-                if (warn) Logger.LogWarning("Clamped employee stat to safe cap " + cap.ToString(CultureInfo.InvariantCulture) + ".");
-                return Mathf.Clamp(value, 0f, cap);
+                if (warn) Logger.LogWarning("Clamped employee stat to safe cap " + statCap.ToString(CultureInfo.InvariantCulture) + ".");
+                return Mathf.Clamp(value, 0f, statCap);
             }
             return value;
         }
@@ -728,20 +821,61 @@ namespace CharacterEditorDeluxe
         {
             for (int i = 0; i < statInputs.Length; i++)
             {
+                int statCap = GetStatCap(i);
                 float value;
                 if (!float.TryParse(statInputs[i], NumberStyles.Float, CultureInfo.InvariantCulture, out value) ||
                     float.IsNaN(value) || float.IsInfinity(value))
                 {
-                    status = "Finish each stat entry with a finite number between 0 and " + cap + " before applying.";
+                    status = "Finish each stat entry with a finite number between 0 and " + statCap + " before applying.";
                     return false;
                 }
                 if (statDirty[i])
                 {
-                    stagedStats[i] = Mathf.Clamp(value, 0f, cap);
+                    stagedStats[i] = Mathf.Clamp(value, 0f, statCap);
                     statInputs[i] = stagedStats[i].ToString("0.##", CultureInfo.InvariantCulture);
                 }
             }
             return true;
+        }
+
+        private void ResetEmployees(List<characterScript> employees, bool all)
+        {
+            int reset = 0;
+            foreach (characterScript character in employees)
+            {
+                if (!all && character != selected) continue;
+                if (character == null) continue;
+                for (int i = 1; i < StatFields.Length; i++)
+                {
+                    float current = ReadStat(character, i);
+                    float safeVanillaValue = float.IsNaN(current) || float.IsInfinity(current)
+                        ? 0f
+                        : Mathf.Clamp(current, 0f, VanillaSkillCap);
+                    StatMembers[i].SetValue(character, safeVanillaValue);
+                }
+                overrides.SetStatsLock(character, false);
+                reset++;
+            }
+            if (selected != null) LoadSelection(selected);
+            status = "Reset skills to vanilla-compatible values for " + reset + " employee(s); motivation and perks were unchanged.";
+        }
+
+        private void ResetAllEmployeesToVanilla()
+        {
+            RefreshEmployeeCache();
+            foreach (characterScript character in employeeCache)
+            {
+                if (character == null) continue;
+                for (int i = 0; i < StatFields.Length; i++)
+                {
+                    float current = ReadStat(character, i);
+                    float safeVanillaValue = float.IsNaN(current) || float.IsInfinity(current)
+                        ? 0f
+                        : Mathf.Clamp(current, 0f, VanillaSkillCap);
+                    StatMembers[i].SetValue(character, safeVanillaValue);
+                }
+            }
+            if (selected != null) LoadSelection(selected);
         }
 
         private void RefreshPerkCatalog()
@@ -909,8 +1043,8 @@ namespace CharacterEditorDeluxe
         {
             try
             {
-                for (int i = 0; i < StatMembers.Length; i++) StatMembers[i].SetValue(character, (float)cap);
-                overrides.RecordApplied(character, true, true);
+                for (int i = 1; i < StatMembers.Length; i++) StatMembers[i].SetValue(character, (float)cap);
+                overrides.RecordApplied(character, true, false);
                 WritePositivePerks(character);
             }
             catch (Exception ex) { Logger.LogWarning("Auto-max skipped an incomplete character: " + ex.Message); }
